@@ -14,19 +14,24 @@
 - OpenAI Chat Completions 兼容接口：`POST /v1/chat/completions`
 - Anthropic Messages 兼容接口：`POST /v1/messages`
 - OpenAI Responses 兼容接口：`POST /v1/responses`
-- 模型列表接口：`GET /v1/models`
+- 模型列表与会话删除接口：`GET /v1/models`、`DELETE /v1/conversations/:id`
 - 支持非流式与 SSE 流式返回
 - 支持 `conversation_id` 持久会话模式，保持多轮对话连续性
-- 支持完整浏览器 Cookie 模式，更接近 claude.ai 浏览器请求环境
-- 支持 `accounts.txt` 多账号池，按当前活跃请求数进行最小负载分发
+- 内置 `/admin` 管理面板，支持中文/英文、浅色/深色/跟随系统主题
+- 管理面板支持账号增删改、批量导入、启停、健康检查、冷却恢复和会话用量限制
+- 支持最小负载与轮询两种账号路由策略，配置及账号变更无需重启即可生效
+- 支持账号定时保活检查，可动态配置检查间隔与超时时间
+- 支持全局令牌桶限流、实时请求指标及最近 7 天按账号聚合的使用统计
+- 支持创建、启停和删除独立 `c2a_` API Key，可通过 `X-API-Key` 或 Bearer 方式认证
+- 支持可选上游代理及包含 `{sid}` 的账号级代理 URL 模板
+- 管理配置、账号和统计数据原子持久化到 JSON 文件，账号密钥不会由管理接口明文返回
+- 支持完整浏览器 Cookie、Bearer sessionKey 和 `accounts.txt` 多账号池
 - 账号级复用 TLS Client、CookieJar、浏览器身份和组织信息，避免每请求重复初始化
 - 持久会话按账号隔离，并串行化同一 `conversation_id` 的并发轮次，避免会话串扰
-- 支持 Bearer sessionKey 模式，便于本地简单调用
-- Bearer 模式下会自动生成可由前端生成的浏览器环境 Cookie/Header；签名或 Cloudflare 类 Cookie 不伪造、不传递
-- completion 请求会携带从真实浏览器请求逆向得到的 claude.ai web `tools` 字段
-- Referer 会按请求阶段动态设置为 `/new` 或 `/chat/<conversation_id>`
-- Datadog/RUM Cookie 与 trace headers 会按浏览器 SDK 的字段结构生成
-- 使用独立 `tlsclient` 模块封装 `github.com/bogdanfinn/tls-client` 的 Chrome 指纹、CookieJar 和浏览器基础 Header
+- Bearer 模式下自动生成可由前端生成的浏览器环境 Cookie/Header；签名或 Cloudflare 类 Cookie 不伪造、不传递
+- completion 请求携带 claude.ai web `tools` 字段，Referer 按请求阶段动态设置
+- Datadog/RUM Cookie 与 trace headers 按浏览器 SDK 的字段结构生成
+- 使用独立 `tlsclient` 模块封装 Chrome 指纹、CookieJar 和浏览器基础 Header
 - 支持 Docker / Docker Compose 部署
 
 ## 支持的模型
@@ -41,6 +46,7 @@
 - `claude-opus-3`
 - `claude-sonnet-4-6`
 - `claude-sonnet-5`
+- `claude-opus-5`
 
 使用其他模型会返回 `invalid_request_error`。
 
@@ -183,6 +189,33 @@ CLAUDE_SESSION_KEY='你的-sessionKey' docker compose up --build
 CLAUDE_COOKIE='sessionKey=...; sessionKeyLC=...; anthropic-device-id=...; ...' docker compose up --build
 ```
 
+## 管理面板
+
+启动服务后访问：
+
+```text
+http://127.0.0.1:8080/admin
+```
+
+首次创建数据文件时，管理员密码优先使用 `ADMIN_INITIAL_PASSWORD`；未设置时默认密码为 `admin`。请在首次登录后立即修改，修改后的密码至少需要 10 个字符。管理状态默认保存至 `data/admin.json`。
+
+管理面板可用于：
+
+- 管理账号及批量导入 sessionKey / Cookie
+- 检查账号健康状态、启停账号、恢复冷却账号并设置会话额度
+- 切换 `least-loaded`（最小负载）或 `round-robin`（轮询）路由策略
+- 配置上游代理、全局请求限流和定时保活
+- 查看实时请求指标及最近 7 天使用统计
+- 创建客户端 API Key；密钥仅在创建时完整显示一次
+
+配置 API Key 后，所有 `/v1/*` 请求还需携带：
+
+```http
+X-API-Key: c2a_...
+```
+
+也可使用 `Authorization: Bearer c2a_...`。但当上游账号需要由请求显式提供时，建议使用 `X-API-Key`，将 `Authorization` 留给 claude.ai sessionKey。
+
 ## 配置项
 
 | 环境变量 | 默认值 | 说明 |
@@ -192,13 +225,18 @@ CLAUDE_COOKIE='sessionKey=...; sessionKeyLC=...; anthropic-device-id=...; ...' d
 | `CLAUDE_SESSION_KEY` | 空 | claude.ai 的 `sessionKey`。配置后请求端可以不传 Bearer。 |
 | `CLAUDE_COOKIE` | 空 | 从浏览器复制的完整 claude.ai Cookie。推荐用于更接近浏览器环境。 |
 | `CLAUDE_ACCOUNTS_FILE` | `accounts.txt` | 多账号文件路径；每行一个 sessionKey 或完整 Cookie。 |
+| `CLAUDE_PROXY_URL` | 空 | 启动时加载传统账号池所用的代理 URL；支持以 `{sid}` 生成稳定账号标识。 |
 | `CLAUDE_TIMEZONE` | `Asia/Singapore` | 发送给 claude.ai 的时区。 |
 | `CLAUDE_LOCALE` | `en-US` | 发送给 claude.ai 的语言区域。 |
 | `DEFAULT_MODEL` | `claude-sonnet-5` | 请求未指定模型时使用的默认模型。必须在支持模型列表内。 |
+| `CLAUDE_EFFORT` | `medium` | 默认推理力度；未设置时兼容读取 `CLAUDE_CODE_EFFORT_LEVEL`。 |
+| `CLAUDE_THINKING` | `auto` | 默认 thinking 配置；可设为 `none`、`enabled` 或 JSON 对象。 |
+| `ADMIN_DATA_FILE` | `data/admin.json` | 管理面板配置、账号及统计数据的持久化文件。 |
+| `ADMIN_INITIAL_PASSWORD` | `admin` | 仅首次创建管理数据文件时使用的初始管理员密码。 |
 
 ## 认证方式
 
-所有 `/v1/*` 接口都需要认证。
+所有 `/v1/*` 接口都需要 claude.ai 账号凭据。若管理面板中已创建 API Key，请求还必须先通过管理 API Key 校验。服务端存在已启用账号时，可不在每个请求中重复传递 claude.ai 凭据。
 
 ### 方式一：Bearer sessionKey
 
