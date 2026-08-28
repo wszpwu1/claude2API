@@ -1,0 +1,12 @@
+.git
+.github
+.claude
+captured
+*.exe
+*.exe~
+*.log
+.env
+.env.*
+README.tmp
+accounts.txt
+claude.ai.har

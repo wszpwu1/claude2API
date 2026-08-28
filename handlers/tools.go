@@ -1,0 +1,300 @@
+package handlers
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io/fs"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"time"
+
+	"claude2api/models"
+
+	"github.com/bmatcuk/doublestar/v4"
+)
+
+// MaxToolRounds caps the tool-use loop so a misbehaving model cannot spin forever.
+const MaxToolRounds = 24
+
+// toolCall is a parsed [TOOL_CALL]...[/TOOL_CALL] instruction from the model text.
+type toolCall struct {
+	Name  string
+	ID    string
+	Input map[string]interface{}
+	Raw   string
+}
+
+var toolCallRe = regexp.MustCompile(`(?s)\[TOOL_CALL\]\s*(\{[\s\S]*?\})\s*\[/TOOL_CALL\]`)
+
+// extractToolCalls parses all tool calls embedded in the model's text.
+// Returns the text stripped of tool-call markers, and the parsed calls.
+func extractToolCalls(text string) (string, []toolCall) {
+	var calls []toolCall
+	matches := toolCallRe.FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
+		return text, nil
+	}
+	for _, m := range matches {
+		var raw map[string]interface{}
+		if err := json.Unmarshal([]byte(m[1]), &raw); err != nil {
+			continue
+		}
+		name, _ := raw["name"].(string)
+		id, _ := raw["id"].(string)
+		if name == "" {
+			continue
+		}
+		if id == "" {
+			id = fmt.Sprintf("toolu_%d", time.Now().UnixNano())
+		}
+		input, _ := raw["input"].(map[string]interface{})
+		if input == nil {
+			// allow flat args
+			input = map[string]interface{}{}
+			for k, v := range raw {
+				if k == "name" || k == "id" {
+					continue
+				}
+				input[k] = v
+			}
+		}
+		calls = append(calls, toolCall{Name: name, ID: id, Input: input, Raw: m[0]})
+	}
+	stripped := toolCallRe.ReplaceAllString(text, "")
+	return stripped, calls
+}
+
+// runTool executes a single tool call and returns Anthropic content blocks.
+func runTool(call toolCall) []models.AnthropicContentBlock {
+	out := executeTool(call.Name, call.Input)
+	return []models.AnthropicContentBlock{{
+		Type:      "text",
+		Text:      out,
+		ID:        call.ID,
+		Name:      call.Name,
+		Content:   out,
+		IsError:   boolPtr(false),
+	}}
+}
+
+func boolPtr(b bool) *bool { return &b }
+
+func toolContext(timeout time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), timeout)
+}
+
+// executeTool runs the requested tool and returns its textual output.
+func executeTool(name string, input map[string]interface{}) string {
+	switch name {
+	case "Bash":
+		return toolBash(input)
+	case "Read":
+		return toolRead(input)
+	case "Write":
+		return toolWrite(input)
+	case "Edit":
+		return toolEdit(input)
+	case "Glob":
+		return toolGlob(input)
+	case "Grep":
+		return toolGrep(input)
+	case "WebFetch":
+		return toolUnsupported(name, input)
+	default:
+		return fmt.Sprintf("ERROR: unknown tool %q", name)
+	}
+}
+
+func toolBash(input map[string]interface{}) string {
+	cmd, _ := input["command"].(string)
+	if cmd == "" {
+		return "ERROR: Bash requires 'command'"
+	}
+	// Safety: block obviously dangerous interactive / destructive patterns.
+	dangerous := []string{"rm -rf /", "mkfs", ":(){:|:&};:", "dd if=/dev/zero"}
+	for _, d := range dangerous {
+		if strings.Contains(cmd, d) {
+			return fmt.Sprintf("ERROR: blocked dangerous command pattern: %s", d)
+		}
+	}
+	timeout := 120 * time.Second
+	if t, ok := input["timeout"].(float64); ok && t > 0 {
+		timeout = time.Duration(t) * time.Millisecond
+	}
+	ctx, cancel := toolContext(timeout)
+	defer cancel()
+
+	execCmd := exec.CommandContext(ctx, "cmd", "/c", cmd)
+	if os.PathSeparator == '/' {
+		execCmd = exec.CommandContext(ctx, "bash", "-c", cmd)
+	}
+	out, err := execCmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return fmt.Sprintf("ERROR: command timed out after %v\n%s", timeout, truncate(string(out), 2000))
+	}
+	if err != nil {
+		return fmt.Sprintf("ERROR: %v\n%s", err, truncate(string(out), 2000))
+	}
+	return truncate(string(out), 8000)
+}
+
+func toolRead(input map[string]interface{}) string {
+	path, _ := input["file_path"].(string)
+	if path == "" {
+		return "ERROR: Read requires 'file_path'"
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Sprintf("ERROR: read %s: %v", path, err)
+	}
+	content := string(data)
+	if off, ok := input["offset"].(float64); ok && off > 0 {
+		lines := strings.Split(content, "\n")
+		start := int(off)
+		if start < len(lines) {
+			content = strings.Join(lines[start:], "\n")
+		} else {
+			content = ""
+		}
+	}
+	if lim, ok := input["limit"].(float64); ok && lim > 0 {
+		lines := strings.Split(content, "\n")
+		if int(lim) < len(lines) {
+			content = strings.Join(lines[:int(lim)], "\n")
+		}
+	}
+	return truncate(content, 8000)
+}
+
+func toolWrite(input map[string]interface{}) string {
+	path, _ := input["file_path"].(string)
+	content, _ := input["content"].(string)
+	if path == "" {
+		return "ERROR: Write requires 'file_path'"
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil && filepath.Dir(path) != "" {
+		return fmt.Sprintf("ERROR: mkdir %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		return fmt.Sprintf("ERROR: write %s: %v", path, err)
+	}
+	return fmt.Sprintf("Wrote %d bytes to %s", len(content), path)
+}
+
+func toolEdit(input map[string]interface{}) string {
+	path, _ := input["file_path"].(string)
+	oldStr, _ := input["old_string"].(string)
+	newStr, _ := input["new_string"].(string)
+	if path == "" || oldStr == "" {
+		return "ERROR: Edit requires 'file_path' and 'old_string'"
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Sprintf("ERROR: read %s: %v", path, err)
+	}
+	content := string(data)
+	count := strings.Count(content, oldStr)
+	if count == 0 {
+		return fmt.Sprintf("ERROR: old_string not found in %s", path)
+	}
+	if count > 1 {
+		return fmt.Sprintf("ERROR: old_string appears %d times in %s; provide more surrounding context", count, path)
+	}
+	content = strings.Replace(content, oldStr, newStr, 1)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		return fmt.Sprintf("ERROR: write %s: %v", path, err)
+	}
+	return fmt.Sprintf("Edited %s", path)
+}
+
+func toolGlob(input map[string]interface{}) string {
+	pattern, _ := input["pattern"].(string)
+	path, _ := input["path"].(string)
+	if pattern == "" {
+		pattern = "**/*"
+	}
+	if path == "" {
+		path = "."
+	}
+	matches, err := doublestar.Glob(os.DirFS(path), pattern, doublestar.WithFilesOnly())
+	if err != nil {
+		return fmt.Sprintf("ERROR: glob %s: %v", pattern, err)
+	}
+	if len(matches) > 2000 {
+		matches = matches[:2000]
+	}
+	return strings.Join(matches, "\n")
+}
+
+func toolGrep(input map[string]interface{}) string {
+	pattern, _ := input["pattern"].(string)
+	if pattern == "" {
+		return "ERROR: Grep requires 'pattern'"
+	}
+	path, _ := input["path"].(string)
+	if path == "" {
+		path = "."
+	}
+	regex, err := regexp.Compile(pattern)
+	if err != nil {
+		return fmt.Sprintf("ERROR: invalid regex %s: %v", pattern, err)
+	}
+	var results []string
+	walkErr := doublestar.GlobWalk(os.DirFS(path), "**/*", func(p string, d os.DirEntry) error {
+		if d.IsDir() {
+			return nil
+		}
+		full := filepath.Join(path, p)
+		info, err := os.Stat(full)
+		if err != nil || info.Size() > 1<<20 {
+			return nil
+		}
+		data, err := os.ReadFile(full)
+		if err != nil {
+			return nil
+		}
+		if isBinary(data) {
+			return nil
+		}
+		for i, line := range strings.Split(string(data), "\n") {
+			if regex.MatchString(line) {
+				results = append(results, fmt.Sprintf("%s:%d:%s", full, i+1, line))
+				if len(results) >= 2000 {
+					return fs.SkipDir
+				}
+			}
+		}
+		return nil
+	})
+	if walkErr != nil {
+		return fmt.Sprintf("ERROR: walk %s: %v", path, walkErr)
+	}
+	return strings.Join(results, "\n")
+}
+
+func toolUnsupported(name string, input map[string]interface{}) string {
+	b, _ := json.Marshal(input)
+	return fmt.Sprintf("ERROR: tool %q is not supported by claude2api yet. Input: %s", name, truncate(string(b), 500))
+}
+
+// --- helpers ---
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + fmt.Sprintf("\n... [truncated %d chars]", len(s)-n)
+}
+
+func isBinary(data []byte) bool {
+	for _, b := range data {
+		if b == 0 {
+			return true
+		}
+	}
+	return false
+}
