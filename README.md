@@ -281,10 +281,6 @@ X-Claude-Cookie: <从 claude.ai 浏览器请求中复制的完整 Cookie>
 
 如果服务端已经配置 `CLAUDE_COOKIE`，请求端可以不传 `X-Claude-Cookie`。
 
-## 致谢
-
-感谢 [LINUX DO 社区](https://linux.do) —— 本项目在此发布，感谢社区用户的反馈与帮助。
-
 
 英文版：
 
