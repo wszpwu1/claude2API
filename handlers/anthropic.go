@@ -336,13 +336,17 @@ func (h *Handler) anthropicToolNonStream(c *gin.Context, client *claude.Client, 
 		return
 	}
 	usage = cacheUsage(accountID, req.ConversationID, req, usage)
+	stopReason := "end_turn"
+	if containsToolUse(blocks) {
+		stopReason = "tool_use"
+	}
 	resp := models.AnthropicResponse{
 		ID:         genID("msg_"),
 		Type:       "message",
 		Role:       "assistant",
 		Content:    blocks,
 		Model:      claudeModel,
-		StopReason: "end_turn",
+		StopReason: stopReason,
 		Usage:      usage,
 	}
 	c.JSON(http.StatusOK, resp)
@@ -426,6 +430,9 @@ func (h *Handler) anthropicToolStream(c *gin.Context, client *claude.Client, req
 	}
 
 	stopReason := "end_turn"
+	if containsToolUse(blocks) {
+		stopReason = "tool_use"
+	}
 	writeSSE(c.Writer, models.AnthropicStreamMessageDelta{
 		Type:  "message_delta",
 		Delta: models.AnthropicStopDelta{StopReason: stopReason},
@@ -527,32 +534,24 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 			return allBlocks, usage, nil
 		}
 
-		// Execute each tool call and emit tool_use + tool_result blocks so the
-		// caller can display the full tool-use trace.
-		userResultBlocks := []models.AnthropicContentBlock{}
+		// Return tool_use blocks to the Anthropic-compatible client. RooCode must
+		// execute these tools in its own workspace and send the resulting
+		// tool_result blocks in the next /v1/messages request. Executing them here
+		// would run against the proxy server's filesystem and prevents RooCode from
+		// receiving the tool request it is waiting for.
 		for _, call := range calls {
-			toolBlock := models.AnthropicContentBlock{
+			allBlocks = append(allBlocks, models.AnthropicContentBlock{
 				Type:  "tool_use",
 				ID:    call.ID,
 				Name:  call.Name,
 				Input: call.Input,
-			}
-			allBlocks = append(allBlocks, toolBlock)
-			assistantBlocks = append(assistantBlocks, toolBlock)
-
-			result := runTool(call)
-			resultBlock := models.AnthropicContentBlock{
-				Type:    "tool_result",
-				UseID:   call.ID,
-				Content: result,
-			}
-			allBlocks = append(allBlocks, resultBlock)
-			userResultBlocks = append(userResultBlocks, resultBlock)
+			})
 		}
-
-		// Append assistant + tool_result turns to transcript for the next round.
-		messages = append(messages, models.AnthropicMessage{Role: "assistant", Content: blocksToInterface(assistantBlocks)})
-		messages = append(messages, models.AnthropicMessage{Role: "user", Content: blocksToInterface(userResultBlocks)})
+		usage := models.AnthropicUsage{
+			InputTokens:  totalInputChars / 4,
+			OutputTokens: totalOutputChars(allBlocks),
+		}
+		return allBlocks, usage, nil
 	}
 
 	// Hit the round cap — return whatever we have.
@@ -561,6 +560,15 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 		OutputTokens: totalOutputChars(allBlocks),
 	}
 	return allBlocks, usage, nil
+}
+
+func containsToolUse(blocks []models.AnthropicContentBlock) bool {
+	for _, block := range blocks {
+		if block.Type == "tool_use" {
+			return true
+		}
+	}
+	return false
 }
 
 // totalOutputChars estimates total output tokens from content blocks.
