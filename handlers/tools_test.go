@@ -99,6 +99,77 @@ func TestToolResultUsesAnthropicToolUseID(t *testing.T) {
 	}
 }
 
+func TestValidateAnthropicToolPairing(t *testing.T) {
+	toolUse := func(id string) map[string]interface{} {
+		return map[string]interface{}{"type": "tool_use", "id": id, "name": "lookup", "input": map[string]interface{}{}}
+	}
+	toolResult := func(id string) map[string]interface{} {
+		return map[string]interface{}{"type": "tool_result", "tool_use_id": id, "content": "ok"}
+	}
+
+	tests := []struct {
+		name     string
+		messages []models.AnthropicMessage
+		wantErr  string
+	}{
+		{
+			name: "valid multi-round transcript",
+			messages: []models.AnthropicMessage{
+				{Role: "assistant", Content: []interface{}{toolUse("toolu_1")}},
+				{Role: "user", Content: []interface{}{toolResult("toolu_1")}},
+				{Role: "assistant", Content: []interface{}{toolUse("toolu_2")}},
+				{Role: "user", Content: []interface{}{toolResult("toolu_2")}},
+			},
+		},
+		{
+			name: "missing result id",
+			messages: []models.AnthropicMessage{
+				{Role: "assistant", Content: []interface{}{toolUse("toolu_1")}},
+				{Role: "user", Content: []interface{}{toolResult("")}},
+			},
+			wantErr: "empty tool_use_id",
+		},
+		{
+			name: "unknown result id",
+			messages: []models.AnthropicMessage{
+				{Role: "user", Content: []interface{}{toolResult("toolu_unknown")}},
+			},
+			wantErr: "unknown tool_use id",
+		},
+		{
+			name: "duplicate result",
+			messages: []models.AnthropicMessage{
+				{Role: "assistant", Content: []interface{}{toolUse("toolu_1")}},
+				{Role: "user", Content: []interface{}{toolResult("toolu_1"), toolResult("toolu_1")}},
+			},
+			wantErr: "duplicate tool_result",
+		},
+		{
+			name: "out of order results",
+			messages: []models.AnthropicMessage{
+				{Role: "assistant", Content: []interface{}{toolUse("toolu_1"), toolUse("toolu_2")}},
+				{Role: "user", Content: []interface{}{toolResult("toolu_2"), toolResult("toolu_1")}},
+			},
+			wantErr: "out of order",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateAnthropicToolPairing(normalizeAnthropicToolResults(tc.messages))
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want substring %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestToolDefsPrompt(t *testing.T) {
 	tools := []models.AnthropicTool{{Name: "Bash", InputSchema: map[string]interface{}{"type": "object"}}}
 	p := buildToolDefsPrompt(tools)

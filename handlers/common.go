@@ -73,6 +73,23 @@ func (h *Handler) AccountCooldowns() map[string]time.Time {
 	return h.clients.accountCooldowns(time.Now())
 }
 
+// AccountRuntimeStats is a point-in-time snapshot of an account's runtime
+// counters exposed to the admin layer.
+type AccountRuntimeStats struct {
+	ActiveRequests int64
+	SessionUsed    int64
+}
+
+// AccountStats returns runtime counters for the given account ID.
+// The second return value is false if the account is not in the pool.
+func (h *Handler) AccountStats(accountID string) (AccountRuntimeStats, bool) {
+	active, used, ok := h.clients.accountStats(accountID)
+	if !ok {
+		return AccountRuntimeStats{}, false
+	}
+	return AccountRuntimeStats{ActiveRequests: active, SessionUsed: used}, true
+}
+
 // CheckAccount verifies that a configured account can access the upstream API.
 // The result immediately updates whether the account participates in routing.
 func (h *Handler) CheckAccount(ctx context.Context, accountID string) error {
@@ -100,11 +117,19 @@ func (h *Handler) handleAccountError(accountID string, err error) {
 	case strings.Contains(message, "status 429"):
 		// Rate limiting is temporary: cool the account down and retry it later.
 		h.clients.cooldownAccount(accountID)
+	case strings.Contains(message, "status 402"):
+		// 402 means the account's subscription quota is exhausted — this is a
+		// persistent account-level problem, not a temporary rate limit.
+		h.clients.setAccountHealthy(accountID, false)
 	case strings.Contains(message, "status 401"), strings.Contains(message, "status 403"):
 		// Authentication rejection or account blocking is not a temporary rate
 		// limit. Remove the account from routing until an explicit health check
 		// succeeds or an administrator restores it.
 		h.clients.setAccountHealthy(accountID, false)
+	case strings.Contains(message, "status 5"):
+		// Transient upstream 5xx errors: apply a short cooldown rather than
+		// permanently removing the account from routing.
+		h.clients.shortCooldownAccount(accountID)
 	}
 }
 
@@ -169,6 +194,20 @@ func (h *Handler) acquireClient(c *gin.Context, conversationID string) (*clientL
 	}
 	c.Set("accountID", lease.accountID)
 	return lease, nil
+}
+
+// incrementAccountSession increments the session-used counter for the given
+// account. It is called after each successful upstream completion so that the
+// session limit check in available() stays accurate.
+func (h *Handler) incrementAccountSession(accountID string) {
+	h.clients.accountsMu.RLock()
+	defer h.clients.accountsMu.RUnlock()
+	for _, ac := range h.clients.accounts {
+		if ac.id == accountID {
+			ac.incrementSessionUsed()
+			return
+		}
+	}
 }
 
 func (h *Handler) deleteTemporaryConversation(client *claude.Client, conversationID string) {
@@ -239,8 +278,10 @@ func (h *Handler) runCompletion(ctx context.Context, client *claude.Client, prom
 	}
 
 	// Choose tools payload: caller override, or default web tools.
+	// Use nil check (not len > 0) so callers can pass an explicit empty slice
+	// to suppress the default web tools (e.g. tool-simulation loop).
 	toolsPayload := claude.WebTools()
-	if len(tools) > 0 {
+	if tools != nil {
 		toolsPayload = tools[0]
 	}
 
@@ -306,6 +347,10 @@ func (h *Handler) runCompletion(ctx context.Context, client *claude.Client, prom
 		state.LastHumanUUID = humanUUID
 		state.LastAssistantUUID = assistantUUID
 		state.UpdatedAt = time.Now()
+	}
+	// Count the completed upstream round-trip against the account's session quota.
+	if accountID != "" {
+		h.incrementAccountSession(accountID)
 	}
 	return thinkingBuf.String(), sb.String(), nil
 }

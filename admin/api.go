@@ -16,6 +16,12 @@ import (
 
 var errAccountExists = errors.New("account already exists")
 
+// AccountRuntimeStats carries per-account counters fetched from the runtime pool.
+type AccountRuntimeStats struct {
+	ActiveRequests int64
+	SessionUsed    int64
+}
+
 // API exposes administrator authentication and management endpoints.
 type API struct {
 	store              *Store
@@ -28,6 +34,7 @@ type API struct {
 	onAccountCheck     func(context.Context, string) error
 	onAccountRestore   func(string) bool
 	onAccountCooldowns func() map[string]time.Time
+	onAccountStats     func(accountID string) (AccountRuntimeStats, bool)
 }
 
 // NewAPI creates the management API.
@@ -79,6 +86,12 @@ func (a *API) SetAccountRestoreHandler(handler func(string) bool) {
 // SetAccountCooldownsHandler registers the runtime cooldown snapshot callback.
 func (a *API) SetAccountCooldownsHandler(handler func() map[string]time.Time) {
 	a.onAccountCooldowns = handler
+}
+
+// SetAccountStatsHandler registers a callback that returns live per-account
+// runtime counters (active requests, sessions used) from the client pool.
+func (a *API) SetAccountStatsHandler(handler func(string) (AccountRuntimeStats, bool)) {
+	a.onAccountStats = handler
 }
 
 // RegisterRoutes mounts public authentication and protected management routes.
@@ -178,6 +191,7 @@ func (a *API) state(c *gin.Context) {
 	cooldowns := a.accountCooldownSnapshot()
 	for index := range state.Accounts {
 		state.Accounts[index].CooldownUntil = cooldowns[state.Accounts[index].ID]
+		a.mergeRuntimeStats(&state.Accounts[index])
 		prepareAccountForResponse(&state.Accounts[index])
 	}
 	for index := range state.APIKeys {
@@ -232,6 +246,7 @@ func (a *API) listAccounts(c *gin.Context) {
 	cooldowns := a.accountCooldownSnapshot()
 	for index := range accounts {
 		accounts[index].CooldownUntil = cooldowns[accounts[index].ID]
+		a.mergeRuntimeStats(&accounts[index])
 		prepareAccountForResponse(&accounts[index])
 	}
 	c.JSON(http.StatusOK, gin.H{"accounts": accounts})
@@ -242,6 +257,24 @@ func (a *API) accountCooldownSnapshot() map[string]time.Time {
 		return nil
 	}
 	return a.onAccountCooldowns()
+}
+
+// mergeRuntimeStats overlays live counters (active requests, session usage)
+// from the runtime pool onto a persisted Account before it is returned to the
+// caller. The persisted SessionUsed acts as a floor: runtime usage is taken
+// when it is higher (i.e. since the last persistence cycle).
+func (a *API) mergeRuntimeStats(account *Account) {
+	if a.onAccountStats == nil {
+		return
+	}
+	stats, ok := a.onAccountStats(account.ID)
+	if !ok {
+		return
+	}
+	account.ActiveRequests = stats.ActiveRequests
+	if stats.SessionUsed > account.SessionUsed {
+		account.SessionUsed = stats.SessionUsed
+	}
 }
 
 func (a *API) checkAccounts(c *gin.Context) {
@@ -289,17 +322,17 @@ func (a *API) restoreAccounts(c *gin.Context) {
 		return
 	}
 	accounts := a.store.Snapshot().Accounts
-	restored := 0
+	restoredIDs := make(map[string]struct{})
 	for _, account := range accounts {
 		if !account.Enabled || !a.onAccountRestore(account.ID) {
 			continue
 		}
-		restored++
+		restoredIDs[account.ID] = struct{}{}
 	}
 	if err := a.store.Update(func(state *PersistentState) error {
 		now := time.Now().UTC()
 		for index := range state.Accounts {
-			if state.Accounts[index].Enabled {
+			if _, ok := restoredIDs[state.Accounts[index].ID]; ok {
 				state.Accounts[index].Status = "ready"
 				state.Accounts[index].StatusMessage = ""
 				state.Accounts[index].UpdatedAt = now
@@ -310,7 +343,7 @@ func (a *API) restoreAccounts(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": err.Error(), "type": "storage_error"}})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"restored": restored})
+	c.JSON(http.StatusOK, gin.H{"restored": len(restoredIDs)})
 }
 
 func (a *API) deleteBlockedAccounts(c *gin.Context) {
@@ -319,7 +352,11 @@ func (a *API) deleteBlockedAccounts(c *gin.Context) {
 		kept := state.Accounts[:0]
 		for _, account := range state.Accounts {
 			status := strings.ToLower(account.Status)
-			if strings.Contains(status, "ban") || strings.Contains(status, "block") {
+			// Match both the legacy "ban/block" convention and the runtime
+			// "unhealthy" status written by checkAccounts so that accounts
+			// marked unhealthy via health checks are also eligible for removal.
+			if strings.Contains(status, "ban") || strings.Contains(status, "block") ||
+				status == "unhealthy" {
 				deleted++
 				continue
 			}

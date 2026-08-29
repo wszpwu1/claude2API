@@ -124,6 +124,7 @@ func (h *Handler) chatToolStream(c *gin.Context, client *claude.Client, req mode
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
 	chunkID, created := genID("chatcmpl-"), time.Now().Unix()
 	writeSSE(c.Writer, models.ChatCompletionChunk{ID: chunkID, Object: "chat.completion.chunk", Created: created, Model: claudeModel, Choices: []models.ChunkChoice{{Index: 0, Delta: models.Delta{Role: "assistant"}}}})
 	toolIndex := 0
@@ -154,6 +155,9 @@ func (h *Handler) chatCompletionNonStream(c *gin.Context, client *claude.Client,
 		upstreamError(c, err.Error())
 		return
 	}
+	// Use rune count for accurate token estimation with multi-byte text.
+	promptTokens := len([]rune(prompt)) / 4
+	completionTokens := len([]rune(content)) / 4
 	resp := models.ChatCompletionResponse{
 		ID:      genID("chatcmpl-"),
 		Object:  "chat.completion",
@@ -165,7 +169,9 @@ func (h *Handler) chatCompletionNonStream(c *gin.Context, client *claude.Client,
 			FinishReason: "stop",
 		}},
 		Usage: models.Usage{
-			CompletionTokens: len(content) / 4,
+			PromptTokens:     promptTokens,
+			CompletionTokens: completionTokens,
+			TotalTokens:      promptTokens + completionTokens,
 		},
 	}
 	c.JSON(http.StatusOK, resp)
@@ -201,17 +207,20 @@ func (h *Handler) chatCompletionStream(c *gin.Context, client *claude.Client, pr
 			flusher.Flush()
 		}
 	}, nil)
+	finishReason := "stop"
 	if err != nil {
+		// Emit the error as an inline delta so clients see it, then close with
+		// finish_reason "error" instead of the misleading "stop".
 		writeSSE(c.Writer, models.ChatCompletionChunk{
 			ID: chunkID, Object: "chat.completion.chunk", Created: created, Model: claudeModel,
 			Choices: []models.ChunkChoice{{Index: 0, Delta: models.Delta{Content: "[error: " + err.Error() + "]"}}},
 		})
+		finishReason = "error"
 	}
 
-	stop := "stop"
 	writeSSE(c.Writer, models.ChatCompletionChunk{
 		ID: chunkID, Object: "chat.completion.chunk", Created: created, Model: claudeModel,
-		Choices: []models.ChunkChoice{{Index: 0, Delta: models.Delta{}, FinishReason: &stop}},
+		Choices: []models.ChunkChoice{{Index: 0, Delta: models.Delta{}, FinishReason: &finishReason}},
 	})
 	_, _ = c.Writer.WriteString("data: [DONE]\n\n")
 	if flusher != nil {

@@ -19,9 +19,14 @@ type accountClient struct {
 	active        atomic.Int64
 	cooldownUntil atomic.Int64
 	unhealthy     atomic.Bool
+	sessionLimit  int64        // immutable after creation; 0 = unlimited
+	sessionUsed   atomic.Int64 // cumulative successful completions
 }
 
-const accountCooldown = 5 * time.Minute
+const (
+	accountCooldown      = 5 * time.Minute
+	accountShortCooldown = 30 * time.Second // transient upstream errors (5xx)
+)
 
 type clientLease struct {
 	accountID string
@@ -56,11 +61,14 @@ func newClientPool(baseURL string, accounts []config.Account) (*clientPool, erro
 		if err != nil {
 			return nil, fmt.Errorf("create account client: %w", err)
 		}
-		p.accounts = append(p.accounts, &accountClient{
-			id:         accountID,
-			credential: credentialID(account.SessionKey, account.Cookie+"\x00"+proxyURL),
-			client:     client,
-		})
+		ac := &accountClient{
+			id:           accountID,
+			credential:   credentialID(account.SessionKey, account.Cookie+"\x00"+proxyURL),
+			client:       client,
+			sessionLimit: account.SessionLimit,
+		}
+		ac.sessionUsed.Store(account.SessionUsed)
+		p.accounts = append(p.accounts, ac)
 	}
 	return p, nil
 }
@@ -177,7 +185,21 @@ func (a *accountClient) cooldownDeadline(now time.Time) time.Time {
 }
 
 func (a *accountClient) available(now time.Time) bool {
-	return !a.unhealthy.Load() && !a.coolingDown(now)
+	if a.unhealthy.Load() || a.coolingDown(now) {
+		return false
+	}
+	// When a session limit is configured, exclude the account once it is
+	// exhausted so it stops receiving new requests.
+	if a.sessionLimit > 0 && a.sessionUsed.Load() >= a.sessionLimit {
+		return false
+	}
+	return true
+}
+
+// incrementSessionUsed records one completed session against the account's
+// quota. It should be called after a successful upstream round-trip.
+func (a *accountClient) incrementSessionUsed() {
+	a.sessionUsed.Add(1)
 }
 
 func (p *clientPool) accountCooldowns(now time.Time) map[string]time.Time {
@@ -191,6 +213,19 @@ func (p *clientPool) accountCooldowns(now time.Time) map[string]time.Time {
 		}
 	}
 	return cooldowns
+}
+
+// accountStats returns a point-in-time snapshot of an account's runtime
+// counters: currently active leases and cumulative sessions used.
+func (p *clientPool) accountStats(accountID string) (active, sessionUsed int64, ok bool) {
+	p.accountsMu.RLock()
+	defer p.accountsMu.RUnlock()
+	for _, account := range p.accounts {
+		if account.id == accountID {
+			return account.active.Load(), account.sessionUsed.Load(), true
+		}
+	}
+	return 0, 0, false
 }
 
 func (p *clientPool) setAccountHealthy(accountID string, healthy bool) bool {
@@ -211,11 +246,31 @@ func (p *clientPool) setAccountHealthy(accountID string, healthy bool) bool {
 }
 
 func (p *clientPool) cooldownAccount(accountID string) bool {
+	return p.setCooldown(accountID, accountCooldown)
+}
+
+// shortCooldownAccount applies a brief cooldown for transient upstream errors
+// (e.g. 5xx). The account returns to rotation much sooner than after a 429.
+func (p *clientPool) shortCooldownAccount(accountID string) bool {
+	return p.setCooldown(accountID, accountShortCooldown)
+}
+
+func (p *clientPool) setCooldown(accountID string, d time.Duration) bool {
 	p.accountsMu.RLock()
 	defer p.accountsMu.RUnlock()
 	for _, account := range p.accounts {
 		if account.id == accountID {
-			account.cooldownUntil.Store(time.Now().Add(accountCooldown).UnixNano())
+			// Only extend the deadline; never shorten an existing longer cooldown.
+			next := time.Now().Add(d).UnixNano()
+			for {
+				cur := account.cooldownUntil.Load()
+				if cur >= next {
+					break
+				}
+				if account.cooldownUntil.CompareAndSwap(cur, next) {
+					break
+				}
+			}
 			p.clearAccountAffinity(account)
 			return true
 		}
@@ -281,6 +336,9 @@ func (p *clientPool) replaceAccounts(accounts []config.Account) error {
 		proxyURL := resolveAccountProxy(account.ProxyURL, accountID)
 		credential := credentialID(account.SessionKey, account.Cookie+"\x00"+proxyURL)
 		if current, ok := existing[accountID]; ok && current.credential == credential {
+			// Keep the existing client (and its live active/sessionUsed counters)
+			// but update the session limit in case the admin changed it.
+			current.sessionLimit = account.SessionLimit
 			replacements = append(replacements, current)
 			retained[current] = struct{}{}
 			continue
@@ -289,7 +347,13 @@ func (p *clientPool) replaceAccounts(accounts []config.Account) error {
 		if err != nil {
 			return fmt.Errorf("create account client: %w", err)
 		}
-		created := &accountClient{id: accountID, credential: credential, client: client}
+		created := &accountClient{
+			id:           accountID,
+			credential:   credential,
+			client:       client,
+			sessionLimit: account.SessionLimit,
+		}
+		created.sessionUsed.Store(account.SessionUsed)
 		replacements = append(replacements, created)
 		retained[created] = struct{}{}
 	}

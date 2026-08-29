@@ -24,6 +24,10 @@ func New(baseURL string, proxyURL ...string) (*Client, error) {
 	jar := tlsclient.NewCookieJar()
 	options := []tlsclient.HttpClientOption{
 		tlsclient.WithTimeoutSeconds(300),
+		tlsclient.WithTransportOptions(&tlsclient.TransportOptions{
+			MaxIdleConns:        200,
+			MaxIdleConnsPerHost: 100,
+		}),
 		tlsclient.WithClientProfile(profiles.Chrome_146),
 		tlsclient.WithCookieJar(jar),
 		tlsclient.WithNotFollowRedirects(),

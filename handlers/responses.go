@@ -180,6 +180,7 @@ func (h *Handler) responsesToolStream(c *gin.Context, client *claude.Client, req
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
 	respID, created := genID("resp_"), time.Now().Unix()
 	writeSSE(c.Writer, models.ResponsesResponseCreated{Type: "response.created", Response: models.ResponsesResponse{
 		ID: respID, Object: "response", CreatedAt: created, Model: claudeModel, Status: "in_progress",
@@ -220,6 +221,9 @@ func (h *Handler) responsesNonStream(c *gin.Context, client *claude.Client, prom
 	}
 	respID := genID("resp_")
 	msgID := genID("msg_")
+	// Use rune count for accurate token estimation with multi-byte text.
+	inputTokens := len([]rune(prompt)) / 4
+	outputTokens := len([]rune(content)) / 4
 	resp := models.ResponsesResponse{
 		ID:        respID,
 		Object:    "response",
@@ -234,8 +238,9 @@ func (h *Handler) responsesNonStream(c *gin.Context, client *claude.Client, prom
 			Content: []models.ResponseContentPart{{Type: "output_text", Text: content}},
 		}},
 		Usage: models.ResponsesUsage{
-			OutputTokens: len(content) / 4,
-			TotalTokens:  len(content) / 4,
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
+			TotalTokens:  inputTokens + outputTokens,
 		},
 	}
 	c.JSON(http.StatusOK, resp)

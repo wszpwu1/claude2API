@@ -47,10 +47,12 @@ func main() {
 			proxyURL = managedState.Proxy.URLTemplate
 		}
 		cfg.Accounts = append(cfg.Accounts, config.Account{
-			ID:         account.ID,
-			SessionKey: account.SessionKey,
-			Cookie:     account.Cookie,
-			ProxyURL:   proxyURL,
+			ID:           account.ID,
+			SessionKey:   account.SessionKey,
+			Cookie:       account.Cookie,
+			ProxyURL:     proxyURL,
+			SessionLimit: account.SessionLimit,
+			SessionUsed:  account.SessionUsed,
 		})
 	}
 	adminAuth := admin.NewAuthManager(adminStore)
@@ -76,11 +78,21 @@ func main() {
 			if state.Proxy.Enabled {
 				proxyURL = state.Proxy.URLTemplate
 			}
+			// Seed session usage from the runtime pool so the limit check in
+			// available() starts from the correct baseline after a hot reload.
+			var sessionUsed int64
+			if stats, ok := h.AccountStats(account.ID); ok {
+				sessionUsed = stats.SessionUsed
+			} else {
+				sessionUsed = account.SessionUsed
+			}
 			runtimeAccounts = append(runtimeAccounts, config.Account{
-				ID:         account.ID,
-				SessionKey: account.SessionKey,
-				Cookie:     account.Cookie,
-				ProxyURL:   proxyURL,
+				ID:           account.ID,
+				SessionKey:   account.SessionKey,
+				Cookie:       account.Cookie,
+				ProxyURL:     proxyURL,
+				SessionLimit: account.SessionLimit,
+				SessionUsed:  sessionUsed,
 			})
 		}
 		return h.ReplaceAccounts(runtimeAccounts)
@@ -94,6 +106,16 @@ func main() {
 	adminAPI.SetAccountCheckHandler(h.CheckAccount)
 	adminAPI.SetAccountRestoreHandler(h.RestoreAccount)
 	adminAPI.SetAccountCooldownsHandler(h.AccountCooldowns)
+	adminAPI.SetAccountStatsHandler(func(accountID string) (admin.AccountRuntimeStats, bool) {
+		stats, ok := h.AccountStats(accountID)
+		if !ok {
+			return admin.AccountRuntimeStats{}, false
+		}
+		return admin.AccountRuntimeStats{
+			ActiveRequests: stats.ActiveRequests,
+			SessionUsed:    stats.SessionUsed,
+		}, true
+	})
 
 	// OpenAI-compatible endpoints
 	v1 := r.Group("/v1")

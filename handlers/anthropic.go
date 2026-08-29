@@ -27,6 +27,11 @@ func (h *Handler) AnthropicMessages(c *gin.Context) {
 		badRequest(c, "invalid request body: "+err.Error())
 		return
 	}
+	req.Messages = normalizeAnthropicToolResults(req.Messages)
+	if err := validateAnthropicToolPairing(req.Messages); err != nil {
+		badRequest(c, "invalid tool transcript: "+err.Error())
+		return
+	}
 
 	if len(req.Messages) == 0 {
 		var responsesReq models.ResponsesRequest
@@ -119,6 +124,116 @@ func responseInputToAnthropicMessages(input interface{}) []models.AnthropicMessa
 	}
 }
 
+// normalizeAnthropicToolResults converts decoded tool_result maps into the
+// canonical Anthropic content-block struct so type and tool_use_id remain
+// structured protocol fields instead of being treated as ordinary text.
+func normalizeAnthropicToolResults(messages []models.AnthropicMessage) []models.AnthropicMessage {
+	for i := range messages {
+		parts, ok := messages[i].Content.([]interface{})
+		if !ok {
+			continue
+		}
+		for j, part := range parts {
+			m, ok := part.(map[string]interface{})
+			if !ok || m["type"] != "tool_result" {
+				continue
+			}
+			toolUseID, _ := m["tool_use_id"].(string)
+			if toolUseID == "" {
+				toolUseID, _ = m["use_id"].(string)
+			}
+			block := models.AnthropicContentBlock{
+				Type:    "tool_result",
+				UseID:   toolUseID,
+				Content: m["content"],
+			}
+			if isError, ok := m["is_error"].(bool); ok {
+				block.IsError = &isError
+			}
+			if cacheControl, ok := m["cache_control"]; ok {
+				block.CacheControl = cacheControl
+			}
+			parts[j] = block
+		}
+		messages[i].Content = parts
+	}
+	return messages
+}
+
+// validateAnthropicToolPairing ensures every tool_result references exactly one
+// preceding, unresolved tool_use ID. Results must resolve pending calls in the
+// same order in which those calls appeared, preventing missing, duplicated,
+// unknown, or shifted IDs from corrupting later tool rounds.
+func validateAnthropicToolPairing(messages []models.AnthropicMessage) error {
+	pending := make([]string, 0)
+	seenUses := make(map[string]struct{})
+	resolved := make(map[string]struct{})
+
+	for messageIndex, message := range messages {
+		parts, ok := message.Content.([]interface{})
+		if !ok {
+			continue
+		}
+		for blockIndex, part := range parts {
+			var blockType, id string
+			switch block := part.(type) {
+			case models.AnthropicContentBlock:
+				blockType = block.Type
+				if blockType == "tool_use" {
+					id = block.ID
+				} else if blockType == "tool_result" {
+					id = block.UseID
+				}
+			case map[string]interface{}:
+				blockType, _ = block["type"].(string)
+				if blockType == "tool_use" {
+					id, _ = block["id"].(string)
+				} else if blockType == "tool_result" {
+					id, _ = block["tool_use_id"].(string)
+					if id == "" {
+						id, _ = block["use_id"].(string)
+					}
+				}
+			default:
+				continue
+			}
+
+			switch blockType {
+			case "tool_use":
+				if id == "" {
+					return fmt.Errorf("tool_use at messages[%d].content[%d] has an empty id", messageIndex, blockIndex)
+				}
+				if _, exists := seenUses[id]; exists {
+					return fmt.Errorf("duplicate tool_use id %q at messages[%d].content[%d]", id, messageIndex, blockIndex)
+				}
+				seenUses[id] = struct{}{}
+				pending = append(pending, id)
+			case "tool_result":
+				if id == "" {
+					return fmt.Errorf("tool_result at messages[%d].content[%d] has an empty tool_use_id", messageIndex, blockIndex)
+				}
+				if _, exists := resolved[id]; exists {
+					return fmt.Errorf("duplicate tool_result for tool_use id %q at messages[%d].content[%d]", id, messageIndex, blockIndex)
+				}
+				if _, exists := seenUses[id]; !exists {
+					return fmt.Errorf("tool_result references unknown tool_use id %q at messages[%d].content[%d]", id, messageIndex, blockIndex)
+				}
+				if len(pending) == 0 || pending[0] != id {
+					expected := "none"
+					if len(pending) > 0 {
+						expected = pending[0]
+					}
+					return fmt.Errorf("tool_result id %q is out of order at messages[%d].content[%d]; expected %q", id, messageIndex, blockIndex, expected)
+				}
+				pending = pending[1:]
+				resolved[id] = struct{}{}
+			}
+		}
+	}
+
+	return nil
+}
+
 func normalizeResponseContent(content interface{}) interface{} {
 	parts, ok := content.([]interface{})
 	if !ok {
@@ -161,7 +276,10 @@ func buildAnthropicPrompt(req models.AnthropicRequest) string {
 }
 
 // systemToText extracts text from a system field that may be a string or an
-// array of content blocks (the structured form Claude Code sends).
+// array of content blocks (the structured form Claude Code sends). Block
+// boundaries are retained with blank lines so independently cached system
+// sections cannot be accidentally concatenated into different instructions.
+// cache_control is transport metadata and therefore does not alter the text.
 func systemToText(system interface{}) string {
 	if system == nil {
 		return ""
@@ -170,17 +288,17 @@ func systemToText(system interface{}) string {
 	case string:
 		return v
 	case []interface{}:
-		var sb strings.Builder
+		parts := make([]string, 0, len(v))
 		for _, item := range v {
 			if m, ok := item.(map[string]interface{}); ok {
 				if t, _ := m["type"].(string); t == "text" {
 					if s, _ := m["text"].(string); s != "" {
-						sb.WriteString(s)
+						parts = append(parts, s)
 					}
 				}
 			}
 		}
-		return sb.String()
+		return strings.Join(parts, "\n\n")
 	default:
 		return ""
 	}
@@ -238,23 +356,25 @@ func cacheUsage(accountID, conversationID string, req models.AnthropicRequest, u
 	// InputTokens is already populated by runToolLoop from real prompt sizes.
 	// For pure-text (non-tool) paths, approximate from the request.
 	if usage.InputTokens == 0 {
-		usage.InputTokens = len(systemToText(req.System))/4 + messagesTokens(req.Messages)
+		// Use rune count for multi-byte text accuracy.
+		usage.InputTokens = len([]rune(systemToText(req.System)))/4 + messagesTokens(req.Messages)
 	}
 	return usage
 }
 
 // messagesTokens estimates total tokens across all messages.
+// Uses rune count for more accurate estimation of multi-byte text (e.g. CJK).
 func messagesTokens(messages []models.AnthropicMessage) int {
 	total := 0
 	for _, m := range messages {
 		switch v := m.Content.(type) {
 		case string:
-			total += len(v) / 4
+			total += len([]rune(v)) / 4
 		case []interface{}:
 			for _, item := range v {
-				if m, ok := item.(map[string]interface{}); ok {
-					if s, _ := m["text"].(string); s != "" {
-						total += len(s) / 4
+				if block, ok := item.(map[string]interface{}); ok {
+					if s, _ := block["text"].(string); s != "" {
+						total += len([]rune(s)) / 4
 					}
 				}
 			}
@@ -577,10 +697,14 @@ func totalOutputChars(blocks []models.AnthropicContentBlock) int {
 	for _, b := range blocks {
 		switch b.Type {
 		case "text", "thinking":
-			total += len(b.Text)
+			// Use rune count for accurate multi-byte (e.g. CJK) token estimation.
+			total += len([]rune(b.Text))
 		case "tool_use":
+			// Marshal to JSON to get the actual byte footprint, not the map entry count.
 			if b.Input != nil {
-				total += len(b.Input) * 4
+				if raw, err := json.Marshal(b.Input); err == nil {
+					total += len(raw)
+				}
 			}
 		}
 	}
@@ -606,7 +730,7 @@ func buildToolDefsPrompt(tools []models.AnthropicTool) string {
 		return ""
 	}
 	var sb strings.Builder
-	sb.WriteString("\n\n[Tools]\n")
+	sb.WriteString("[Tools]\n")
 	sb.WriteString("You have access to the following tools. When you need to use a tool, emit EXACTLY one block per call using this format, and NOTHING else around the block:\n")
 	sb.WriteString("  [TOOL_CALL]{\"name\":\"<tool_name>\",\"id\":\"<unique_id>\",\"input\":{...}}[/TOOL_CALL]\n")
 	sb.WriteString("Rules:\n")
@@ -617,7 +741,7 @@ func buildToolDefsPrompt(tools []models.AnthropicTool) string {
 	sb.WriteString("Available tools (JSON):\n")
 	b, _ := json.MarshalIndent(tools, "", "  ")
 	sb.Write(b)
-	sb.WriteString("\n[/Tools]\n")
+	sb.WriteString("\n[/Tools]")
 	return sb.String()
 }
 
@@ -638,8 +762,11 @@ func buildToolPrompt(system interface{}, messages []models.AnthropicMessage, too
 			parts = append(parts, text)
 		}
 	}
+	if toolDefText != "" {
+		parts = append(parts, toolDefText)
+	}
 	parts = append(parts, "[Assistant]\n")
-	return strings.Join(parts, "\n\n") + toolDefText
+	return strings.Join(parts, "\n\n")
 }
 
 // anthropicContentToToolText serializes message content to text, preserving
@@ -651,7 +778,24 @@ func anthropicContentToToolText(content interface{}) string {
 	case []interface{}:
 		var sb strings.Builder
 		for _, item := range v {
-			if m, ok := item.(map[string]interface{}); ok {
+			switch block := item.(type) {
+			case models.AnthropicContentBlock:
+				switch block.Type {
+				case "text":
+					sb.WriteString(block.Text)
+				case "tool_use":
+					if block.Name != "" {
+						sb.WriteString(fmt.Sprintf("\n[Tool Use: %s (%s)]\n", block.Name, block.ID))
+						if input, err := json.Marshal(block.Input); err == nil {
+							sb.Write(input)
+						}
+					}
+				case "tool_result":
+					sb.WriteString(fmt.Sprintf("\n[Tool Result: %s]\n", block.UseID))
+					appendToolResultContent(&sb, block.Content)
+				}
+			case map[string]interface{}:
+				m := block
 				switch m["type"] {
 				case "text":
 					if s, _ := m["text"].(string); s != "" {
@@ -674,26 +818,30 @@ func anthropicContentToToolText(content interface{}) string {
 						id, _ = m["use_id"].(string)
 					}
 					sb.WriteString(fmt.Sprintf("\n[Tool Result: %s]\n", id))
-					switch c := m["content"].(type) {
-					case string:
-						sb.WriteString(c)
-					case []interface{}:
-						for _, b := range c {
-							if bm, ok := b.(map[string]interface{}); ok {
-								if t, _ := bm["type"].(string); t == "text" {
-									if s, _ := bm["text"].(string); s != "" {
-										sb.WriteString(s)
-									}
-								}
-							}
-						}
-					}
+					appendToolResultContent(&sb, m["content"])
 				}
 			}
 		}
 		return sb.String()
 	default:
 		return ""
+	}
+}
+
+func appendToolResultContent(sb *strings.Builder, content interface{}) {
+	switch c := content.(type) {
+	case string:
+		sb.WriteString(c)
+	case []interface{}:
+		for _, b := range c {
+			if bm, ok := b.(map[string]interface{}); ok {
+				if typ, _ := bm["type"].(string); typ == "text" {
+					if text, _ := bm["text"].(string); text != "" {
+						sb.WriteString(text)
+					}
+				}
+			}
+		}
 	}
 }
 

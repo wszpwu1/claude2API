@@ -26,10 +26,12 @@ type Config struct {
 // Account contains credentials for one claude.ai account. Cookie may contain
 // the full browser Cookie header; SessionKey is used for Bearer-only mode.
 type Account struct {
-	ID         string
-	SessionKey string
-	Cookie     string
-	ProxyURL   string
+	ID           string
+	SessionKey   string
+	Cookie       string
+	ProxyURL     string
+	SessionLimit int64 // 0 means unlimited
+	SessionUsed  int64 // cumulative counter at the time this Account was loaded
 }
 
 // New creates a Config from environment variables with sane defaults
