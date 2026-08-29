@@ -121,8 +121,9 @@ http://127.0.0.1:8080/v1
 ### 1. 获取项目并安装依赖
 
 ```bash
-git clone https://github.com/aurora-develop/claude2api.git
-cd claude2api
+git clone https://github.com/wszpwu1/claude2API
+.git
+cd claude2API
 go mod download
 ```
 
@@ -137,7 +138,7 @@ go build -o claude2api.exe .
 Linux 或 macOS：
 
 ```bash
-go build -o claude2api .
+go build -o claude2API .
 ```
 
 ### 3. 启动服务
@@ -382,13 +383,13 @@ curl -X DELETE http://127.0.0.1:8080/v1/conversations/my-chat-001 \
 项目镜像地址：
 
 ```text
-ghcr.io/aurora-develop/claude2api
+ghcr.io//wszpwu1/claude2API
 ```
 
 拉取镜像：
 
 ```bash
-docker pull ghcr.io/aurora-develop/claude2api:latest
+docker pull ghcr.io/wszpwu1/claude2API:latest
 ```
 
 使用 sessionKey 启动：
@@ -638,10 +639,6 @@ http://username-{sid}:password@proxy.example.com:8080
 
 - [中文 API 文档](API.md)
 - [English API Documentation](API_EN.md)
-
-## 致谢
-
-感谢 [LINUX DO 社区](https://linux.do)。本项目在此发布，并持续受益于社区用户的反馈与帮助。
 
 ## 相关文档
 
