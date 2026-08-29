@@ -410,7 +410,8 @@ func (a *API) addAccount(c *gin.Context) {
 
 	err := a.store.Update(func(state *PersistentState) error {
 		for _, existing := range state.Accounts {
-			if existing.SessionKey == account.SessionKey && existing.Cookie == account.Cookie {
+			if strings.EqualFold(strings.TrimSpace(existing.Name), account.Name) ||
+				(existing.SessionKey == account.SessionKey && existing.Cookie == account.Cookie) {
 				return errAccountExists
 			}
 		}

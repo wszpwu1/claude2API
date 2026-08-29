@@ -217,11 +217,23 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body io.Rea
 	return c.httpClient.Do(req)
 }
 
-// GetOrganization fetches the user's organization UUID
+// GetOrganization returns the cached organization UUID when available and
+// otherwise fetches it from claude.ai.
 func (c *Client) GetOrganization(ctx context.Context) (string, error) {
+	return c.getOrganization(ctx, false)
+}
+
+// ValidateOrganization always contacts claude.ai instead of trusting the
+// organization UUID cached from cookies or a previous request. Health checks
+// must use this method so expired, blocked, or banned accounts are detected.
+func (c *Client) ValidateOrganization(ctx context.Context) (string, error) {
+	return c.getOrganization(ctx, true)
+}
+
+func (c *Client) getOrganization(ctx context.Context, forceRefresh bool) (string, error) {
 	c.orgMu.Lock()
 	defer c.orgMu.Unlock()
-	if c.orgID != "" {
+	if !forceRefresh && c.orgID != "" {
 		return c.orgID, nil
 	}
 

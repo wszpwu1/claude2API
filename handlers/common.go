@@ -82,7 +82,7 @@ func (h *Handler) CheckAccount(ctx context.Context, accountID string) error {
 	}
 	checkCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	if _, err := account.client.GetOrganization(checkCtx); err != nil {
+	if _, err := account.client.ValidateOrganization(checkCtx); err != nil {
 		h.clients.setAccountHealthy(accountID, false)
 		h.handleAccountError(accountID, err)
 		return err
@@ -95,9 +95,16 @@ func (h *Handler) handleAccountError(accountID string, err error) {
 	if err == nil || accountID == "" {
 		return
 	}
-	message := err.Error()
-	if strings.Contains(message, "status 429") || strings.Contains(message, "status 403") {
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "status 429"):
+		// Rate limiting is temporary: cool the account down and retry it later.
 		h.clients.cooldownAccount(accountID)
+	case strings.Contains(message, "status 401"), strings.Contains(message, "status 403"):
+		// Authentication rejection or account blocking is not a temporary rate
+		// limit. Remove the account from routing until an explicit health check
+		// succeeds or an administrator restores it.
+		h.clients.setAccountHealthy(accountID, false)
 	}
 }
 

@@ -16,13 +16,33 @@ import (
 
 // AnthropicMessages handles POST /v1/messages (Anthropic format, streaming + non-streaming)
 func (h *Handler) AnthropicMessages(c *gin.Context) {
-	var req models.AnthropicRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	var raw json.RawMessage
+	if err := c.ShouldBindJSON(&raw); err != nil {
 		badRequest(c, "invalid request body: "+err.Error())
 		return
 	}
+
+	var req models.AnthropicRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		badRequest(c, "invalid request body: "+err.Error())
+		return
+	}
+
 	if len(req.Messages) == 0 {
-		badRequest(c, "messages must contain at least one message")
+		var responsesReq models.ResponsesRequest
+		if err := json.Unmarshal(raw, &responsesReq); err == nil && responsesReq.Input != nil {
+			req.Model = responsesReq.Model
+			req.Stream = responsesReq.Stream
+			req.ConversationID = responsesReq.ConversationID
+			req.MaxTokens = responsesReq.MaxOutputTokens
+			req.Temperature = responsesReq.Temperature
+			req.TopP = responsesReq.TopP
+			req.System = responsesReq.Instructions
+			req.Messages = responseInputToAnthropicMessages(responsesReq.Input)
+		}
+	}
+	if len(req.Messages) == 0 {
+		badRequest(c, "messages or input must contain at least one message")
 		return
 	}
 	if req.MaxTokens == 0 {
@@ -61,6 +81,62 @@ func (h *Handler) AnthropicMessages(c *gin.Context) {
 	} else {
 		h.anthropicNonStream(c, lease.client, prompt, claudeModel, effort, req.ConversationID, lease.accountID)
 	}
+}
+
+// responseInputToAnthropicMessages converts an OpenAI Responses API input into
+// Anthropic-compatible messages. OpenAI chat messages already unmarshal directly
+// into AnthropicRequest because both formats use the messages field.
+func responseInputToAnthropicMessages(input interface{}) []models.AnthropicMessage {
+	switch v := input.(type) {
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return nil
+		}
+		return []models.AnthropicMessage{{Role: "user", Content: v}}
+	case []interface{}:
+		messages := make([]models.AnthropicMessage, 0, len(v))
+		for _, item := range v {
+			m, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			role, _ := m["role"].(string)
+			if role == "system" {
+				role = "user"
+			}
+			if role == "" {
+				role = "user"
+			}
+			content, exists := m["content"]
+			if !exists {
+				continue
+			}
+			messages = append(messages, models.AnthropicMessage{Role: role, Content: normalizeResponseContent(content)})
+		}
+		return messages
+	default:
+		return nil
+	}
+}
+
+func normalizeResponseContent(content interface{}) interface{} {
+	parts, ok := content.([]interface{})
+	if !ok {
+		return content
+	}
+	out := make([]interface{}, 0, len(parts))
+	for _, part := range parts {
+		m, ok := part.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		typ, _ := m["type"].(string)
+		if typ == "input_text" || typ == "output_text" {
+			m["type"] = "text"
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 // buildAnthropicPrompt converts Anthropic messages into the single-prompt format

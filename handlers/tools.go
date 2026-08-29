@@ -2,9 +2,11 @@ package handlers
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"mime"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -72,12 +74,12 @@ func extractToolCalls(text string) (string, []toolCall) {
 func runTool(call toolCall) []models.AnthropicContentBlock {
 	out := executeTool(call.Name, call.Input)
 	return []models.AnthropicContentBlock{{
-		Type:      "text",
-		Text:      out,
-		ID:        call.ID,
-		Name:      call.Name,
-		Content:   out,
-		IsError:   boolPtr(false),
+		Type:    "text",
+		Text:    out,
+		ID:      call.ID,
+		Name:    call.Name,
+		Content: out,
+		IsError: boolPtr(false),
 	}}
 }
 
@@ -150,6 +152,13 @@ func toolRead(input map[string]interface{}) string {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Sprintf("ERROR: read %s: %v", path, err)
+	}
+	if isMediaFile(path) {
+		mediaType := mime.TypeByExtension(strings.ToLower(filepath.Ext(path)))
+		if mediaType == "" {
+			mediaType = "application/octet-stream"
+		}
+		return fmt.Sprintf("[Media file: %s; media_type=%s; encoding=base64]\n%s", filepath.Base(path), mediaType, base64.StdEncoding.EncodeToString(data))
 	}
 	content := string(data)
 	if off, ok := input["offset"].(float64); ok && off > 0 {
@@ -282,6 +291,25 @@ func toolUnsupported(name string, input map[string]interface{}) string {
 }
 
 // --- helpers ---
+
+var mediaExtensions = map[string]struct{}{
+	".png": {}, ".jpg": {}, ".jpeg": {}, ".webp": {}, ".gif": {}, ".svg": {}, ".bmp": {}, ".tif": {}, ".tiff": {}, ".ico": {}, ".heic": {}, ".heif": {}, ".avif": {},
+	".wav": {}, ".mp3": {}, ".m4a": {}, ".ogg": {}, ".oga": {}, ".flac": {}, ".aac": {}, ".opus": {}, ".wma": {}, ".mid": {}, ".midi": {},
+	".mp4": {}, ".webm": {}, ".mov": {}, ".mkv": {}, ".avi": {}, ".m4v": {}, ".3gp": {}, ".wmv": {}, ".flv": {}, ".mpeg": {}, ".mpg": {},
+	".pdf": {}, ".doc": {}, ".docx": {}, ".xls": {}, ".xlsx": {}, ".ppt": {}, ".pptx": {}, ".odt": {}, ".ods": {}, ".odp": {}, ".rtf": {},
+	".zip": {}, ".rar": {}, ".7z": {}, ".tar": {}, ".gz": {}, ".tgz": {}, ".bz2": {}, ".xz": {}, ".zst": {},
+}
+
+func isMediaFile(path string) bool {
+	lower := strings.ToLower(path)
+	for _, compound := range []string{".tar.gz", ".tar.bz2", ".tar.xz"} {
+		if strings.HasSuffix(lower, compound) {
+			return true
+		}
+	}
+	_, ok := mediaExtensions[strings.ToLower(filepath.Ext(path))]
+	return ok
+}
 
 func truncate(s string, n int) string {
 	if len(s) <= n {
