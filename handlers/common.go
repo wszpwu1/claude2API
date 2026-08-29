@@ -68,6 +68,11 @@ func (h *Handler) RestoreAccount(accountID string) bool {
 	return h.clients.restoreAccount(accountID)
 }
 
+// AccountCooldowns returns active account cooldown deadlines keyed by account ID.
+func (h *Handler) AccountCooldowns() map[string]time.Time {
+	return h.clients.accountCooldowns(time.Now())
+}
+
 // CheckAccount verifies that a configured account can access the upstream API.
 // The result immediately updates whether the account participates in routing.
 func (h *Handler) CheckAccount(ctx context.Context, accountID string) error {
@@ -271,7 +276,9 @@ func (h *Handler) runCompletion(ctx context.Context, client *claude.Client, prom
 	var thinkingBuf, sb strings.Builder
 	for evt := range events {
 		if evt.Error != nil {
-			return thinkingBuf.String(), sb.String(), fmt.Errorf("upstream: %s", evt.Error.Message)
+			err := fmt.Errorf("upstream: %s", evt.Error.Message)
+			h.handleAccountError(accountID, err)
+			return thinkingBuf.String(), sb.String(), err
 		}
 		// Capture thinking blocks.
 		if t := claude.ExtractThinkingFromSSE(evt); t != "" {

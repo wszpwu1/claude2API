@@ -93,6 +93,7 @@ func main() {
 	adminAPI.SetKeepAliveChangedHandler(keepAliveWorker.SetConfig)
 	adminAPI.SetAccountCheckHandler(h.CheckAccount)
 	adminAPI.SetAccountRestoreHandler(h.RestoreAccount)
+	adminAPI.SetAccountCooldownsHandler(h.AccountCooldowns)
 
 	// OpenAI-compatible endpoints
 	v1 := r.Group("/v1")

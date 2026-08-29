@@ -66,7 +66,7 @@ func TestToolBashAndRead(t *testing.T) {
 func TestAnthropicContentToToolText(t *testing.T) {
 	blocks := []interface{}{
 		map[string]interface{}{"type": "tool_use", "name": "Bash", "id": "toolu_1", "input": map[string]interface{}{"command": "echo"}},
-		map[string]interface{}{"type": "tool_result", "use_id": "toolu_1", "content": "hello"},
+		map[string]interface{}{"type": "tool_result", "tool_use_id": "toolu_1", "content": "hello"},
 		map[string]interface{}{"type": "text", "text": "done"},
 	}
 	got := anthropicContentToToolText(blocks)
@@ -78,6 +78,24 @@ func TestAnthropicContentToToolText(t *testing.T) {
 	}
 	if !strings.Contains(got, "hello") || !strings.Contains(got, "done") {
 		t.Fatalf("missing inner text: %q", got)
+	}
+}
+
+func TestToolResultUsesAnthropicToolUseID(t *testing.T) {
+	block := models.AnthropicContentBlock{
+		Type:    "tool_result",
+		UseID:   "toolu_1",
+		Content: "hello",
+	}
+	data, err := json.Marshal(block)
+	if err != nil {
+		t.Fatalf("marshal tool result: %v", err)
+	}
+	if !strings.Contains(string(data), `"tool_use_id":"toolu_1"`) {
+		t.Fatalf("tool result uses wrong ID field: %s", data)
+	}
+	if strings.Contains(string(data), `"use_id"`) {
+		t.Fatalf("tool result leaked legacy ID field: %s", data)
 	}
 }
 

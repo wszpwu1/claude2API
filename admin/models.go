@@ -25,6 +25,7 @@ type Account struct {
 	Enabled          bool      `json:"enabled"`
 	Status           string    `json:"status"`
 	StatusMessage    string    `json:"status_message,omitempty"`
+	CooldownUntil    time.Time `json:"cooldown_until,omitempty"`
 	ActiveRequests   int64     `json:"active_requests"`
 	RequestCount     int64     `json:"request_count"`
 	SuccessCount     int64     `json:"success_count"`

@@ -453,6 +453,36 @@ func TestClientPoolCooldownExpiresAutomatically(t *testing.T) {
 	lease.release()
 }
 
+func TestClientPoolAccountCooldownsReturnsOnlyActiveDeadlines(t *testing.T) {
+	pool, err := newClientPool("https://claude.ai", []config.Account{
+		{ID: "account-a", SessionKey: "session-a"},
+		{ID: "account-b", SessionKey: "session-b"},
+	})
+	if err != nil {
+		t.Fatalf("newClientPool: %v", err)
+	}
+
+	now := time.Now()
+	activeDeadline := now.Add(5 * time.Minute)
+	pool.accounts[0].cooldownUntil.Store(activeDeadline.UnixNano())
+	pool.accounts[1].cooldownUntil.Store(now.Add(-time.Minute).UnixNano())
+
+	cooldowns := pool.accountCooldowns(now)
+	if len(cooldowns) != 1 {
+		t.Fatalf("cooldown count = %d, want 1", len(cooldowns))
+	}
+	deadline, ok := cooldowns["account-a"]
+	if !ok {
+		t.Fatal("active cooldown for account-a was not returned")
+	}
+	if !deadline.Equal(activeDeadline.UTC()) {
+		t.Fatalf("cooldown deadline = %v, want %v", deadline, activeDeadline.UTC())
+	}
+	if _, ok := cooldowns["account-b"]; ok {
+		t.Fatal("expired cooldown for account-b must not be returned")
+	}
+}
+
 func TestConversationStoreScopesAccountsAndSerializesTurns(t *testing.T) {
 	store := newConversationStore()
 	accountA, _, releaseA := store.acquire("account-a", "conversation-1")

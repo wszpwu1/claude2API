@@ -95,7 +95,7 @@ type AnthropicContentBlock struct {
 	Input        map[string]interface{} `json:"input,omitempty"`
 	Content      interface{}            `json:"content,omitempty"`
 	IsError      *bool                  `json:"is_error,omitempty"`
-	UseID        string                 `json:"use_id,omitempty"`
+	UseID        string                 `json:"tool_use_id,omitempty"`
 	CacheControl interface{}            `json:"cache_control,omitempty"`
 }
 

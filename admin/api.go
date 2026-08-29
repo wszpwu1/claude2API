@@ -27,6 +27,7 @@ type API struct {
 	onKeepAliveChanged func(KeepAliveConfig) error
 	onAccountCheck     func(context.Context, string) error
 	onAccountRestore   func(string) bool
+	onAccountCooldowns func() map[string]time.Time
 }
 
 // NewAPI creates the management API.
@@ -73,6 +74,11 @@ func (a *API) SetAccountCheckHandler(handler func(context.Context, string) error
 // SetAccountRestoreHandler registers the runtime cooldown restore callback.
 func (a *API) SetAccountRestoreHandler(handler func(string) bool) {
 	a.onAccountRestore = handler
+}
+
+// SetAccountCooldownsHandler registers the runtime cooldown snapshot callback.
+func (a *API) SetAccountCooldownsHandler(handler func() map[string]time.Time) {
+	a.onAccountCooldowns = handler
 }
 
 // RegisterRoutes mounts public authentication and protected management routes.
@@ -169,7 +175,9 @@ func (a *API) state(c *gin.Context) {
 	state := a.store.Snapshot()
 	state.AdminPasswordHash = ""
 	state.MasterKey.KeyHash = ""
+	cooldowns := a.accountCooldownSnapshot()
 	for index := range state.Accounts {
+		state.Accounts[index].CooldownUntil = cooldowns[state.Accounts[index].ID]
 		prepareAccountForResponse(&state.Accounts[index])
 	}
 	for index := range state.APIKeys {
@@ -221,10 +229,19 @@ type accountStatusRequest struct {
 
 func (a *API) listAccounts(c *gin.Context) {
 	accounts := a.store.Snapshot().Accounts
+	cooldowns := a.accountCooldownSnapshot()
 	for index := range accounts {
+		accounts[index].CooldownUntil = cooldowns[accounts[index].ID]
 		prepareAccountForResponse(&accounts[index])
 	}
 	c.JSON(http.StatusOK, gin.H{"accounts": accounts})
+}
+
+func (a *API) accountCooldownSnapshot() map[string]time.Time {
+	if a.onAccountCooldowns == nil {
+		return nil
+	}
+	return a.onAccountCooldowns()
 }
 
 func (a *API) checkAccounts(c *gin.Context) {

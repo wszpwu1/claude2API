@@ -583,7 +583,12 @@ func anthropicContentToToolText(content interface{}) string {
 						}
 					}
 				case "tool_result":
-					id, _ := m["use_id"].(string)
+					id, _ := m["tool_use_id"].(string)
+					if id == "" {
+						// Accept the legacy internal field name for compatibility with
+						// transcripts created before tool_use_id was standardized.
+						id, _ = m["use_id"].(string)
+					}
 					sb.WriteString(fmt.Sprintf("\n[Tool Result: %s]\n", id))
 					switch c := m["content"].(type) {
 					case string:

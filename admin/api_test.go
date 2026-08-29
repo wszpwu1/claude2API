@@ -169,6 +169,49 @@ func TestAccountCheckAndRestoreEndpoints(t *testing.T) {
 	}
 }
 
+func TestAccountListIncludesRuntimeCooldownDeadline(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store, err := NewStore(filepath.Join(t.TempDir(), "admin.json"), "test-password")
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.Update(func(state *PersistentState) error {
+		state.Accounts = []Account{{ID: "account-1", Name: "Primary", SessionKey: "session-1", Enabled: true, Status: "ready"}}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed account: %v", err)
+	}
+
+	deadline := time.Now().UTC().Add(5 * time.Minute).Truncate(time.Nanosecond)
+	api := NewAPI(store, NewAuthManager(store), NewMetrics())
+	api.SetAccountCooldownsHandler(func() map[string]time.Time {
+		return map[string]time.Time{"account-1": deadline}
+	})
+
+	router := gin.New()
+	router.GET("/accounts", api.listAccounts)
+	response := performJSONRequest(t, router, http.MethodGet, "/accounts", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("list accounts status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	var result struct {
+		Accounts []Account `json:"accounts"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode accounts response: %v", err)
+	}
+	if len(result.Accounts) != 1 {
+		t.Fatalf("account count = %d, want 1", len(result.Accounts))
+	}
+	if !result.Accounts[0].CooldownUntil.Equal(deadline) {
+		t.Fatalf("cooldown deadline = %v, want %v", result.Accounts[0].CooldownUntil, deadline)
+	}
+	if result.Accounts[0].SessionKey != "" || result.Accounts[0].Cookie != "" {
+		t.Fatal("account secrets must not be returned with cooldown state")
+	}
+}
+
 func TestRuntimeSettingsAndProxyRefreshCallbacks(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store, err := NewStore(filepath.Join(t.TempDir(), "admin.json"), "test-password")

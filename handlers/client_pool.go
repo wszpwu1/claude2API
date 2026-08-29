@@ -32,12 +32,12 @@ type clientLease struct {
 type clientPool struct {
 	baseURL string
 
-	accountsMu   sync.RWMutex
-	accounts     []*accountClient
-	next         atomic.Uint64
+	accountsMu    sync.RWMutex
+	accounts      []*accountClient
+	next          atomic.Uint64
 	routingPolicy atomic.Value // string: round-robin or least-loaded
-	routeMu      sync.Mutex
-	affinity     sync.Map // conversation id -> *accountClient
+	routeMu       sync.Mutex
+	affinity      sync.Map // conversation id -> *accountClient
 
 	clientsMu sync.Mutex
 	clients   sync.Map // credential id -> *claude.Client
@@ -165,12 +165,32 @@ func (p *clientPool) selectConfiguredLocked(now time.Time) *accountClient {
 }
 
 func (a *accountClient) coolingDown(now time.Time) bool {
+	return !a.cooldownDeadline(now).IsZero()
+}
+
+func (a *accountClient) cooldownDeadline(now time.Time) time.Time {
 	until := a.cooldownUntil.Load()
-	return until > 0 && now.UnixNano() < until
+	if until <= 0 || now.UnixNano() >= until {
+		return time.Time{}
+	}
+	return time.Unix(0, until).UTC()
 }
 
 func (a *accountClient) available(now time.Time) bool {
 	return !a.unhealthy.Load() && !a.coolingDown(now)
+}
+
+func (p *clientPool) accountCooldowns(now time.Time) map[string]time.Time {
+	p.accountsMu.RLock()
+	defer p.accountsMu.RUnlock()
+
+	cooldowns := make(map[string]time.Time)
+	for _, account := range p.accounts {
+		if deadline := account.cooldownDeadline(now); !deadline.IsZero() {
+			cooldowns[account.id] = deadline
+		}
+	}
+	return cooldowns
 }
 
 func (p *clientPool) setAccountHealthy(accountID string, healthy bool) bool {
