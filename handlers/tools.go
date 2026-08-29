@@ -85,6 +85,109 @@ func runTool(call toolCall) []models.AnthropicContentBlock {
 
 func boolPtr(b bool) *bool { return &b }
 
+// openAIToolsToAnthropic converts OpenAI/New API function definitions into
+// Anthropic tool definitions while preserving their JSON Schemas.
+func openAIToolsToAnthropic(tools []models.OpenAITool) []models.AnthropicTool {
+	out := make([]models.AnthropicTool, 0, len(tools))
+	for _, tool := range tools {
+		if tool.Type != "" && tool.Type != "function" {
+			continue
+		}
+		if tool.Function.Name == "" {
+			continue
+		}
+		out = append(out, models.AnthropicTool{
+			Name:        tool.Function.Name,
+			Description: tool.Function.Description,
+			InputSchema: tool.Function.Parameters,
+		})
+	}
+	return out
+}
+
+// openAIToolChoiceToAnthropic normalizes OpenAI/New API tool_choice values to
+// Anthropic's auto/any/none/tool selection representation.
+func openAIToolChoiceToAnthropic(choice interface{}) interface{} {
+	switch value := choice.(type) {
+	case nil:
+		return nil
+	case string:
+		switch value {
+		case "auto", "none":
+			return map[string]interface{}{"type": value}
+		case "required", "any":
+			return map[string]interface{}{"type": "any"}
+		default:
+			return nil
+		}
+	case map[string]interface{}:
+		if typ, _ := value["type"].(string); typ == "function" {
+			if function, ok := value["function"].(map[string]interface{}); ok {
+				if name, _ := function["name"].(string); name != "" {
+					return map[string]interface{}{"type": "tool", "name": name}
+				}
+			}
+		}
+		return value
+	default:
+		return nil
+	}
+}
+
+// anthropicToolChoiceToOpenAI converts Anthropic tool_choice into the closest
+// OpenAI/New API equivalent.
+func anthropicToolChoiceToOpenAI(choice interface{}) interface{} {
+	value, ok := choice.(map[string]interface{})
+	if !ok {
+		return choice
+	}
+	switch typ, _ := value["type"].(string); typ {
+	case "auto", "none":
+		return typ
+	case "any":
+		return "required"
+	case "tool":
+		if name, _ := value["name"].(string); name != "" {
+			return map[string]interface{}{
+				"type":     "function",
+				"function": map[string]interface{}{"name": name},
+			}
+		}
+	}
+	return choice
+}
+
+// anthropicToolUseToOpenAI converts a tool_use block into an OpenAI tool call.
+func anthropicToolUseToOpenAI(block models.AnthropicContentBlock) models.OpenAIToolCall {
+	arguments := mustJSON(block.Input)
+	return models.OpenAIToolCall{
+		ID:   block.ID,
+		Type: "function",
+		Function: models.OpenAIFunctionCall{
+			Name:      block.Name,
+			Arguments: arguments,
+		},
+	}
+}
+
+// openAIToolCallToAnthropic converts an OpenAI assistant tool call into an
+// Anthropic tool_use content block. Malformed argument JSON is retained in a
+// compatibility wrapper instead of silently dropping it.
+func openAIToolCallToAnthropic(call models.OpenAIToolCall) models.AnthropicContentBlock {
+	input := map[string]interface{}{}
+	if strings.TrimSpace(call.Function.Arguments) != "" {
+		if err := json.Unmarshal([]byte(call.Function.Arguments), &input); err != nil {
+			input = map[string]interface{}{"_raw_arguments": call.Function.Arguments}
+		}
+	}
+	return models.AnthropicContentBlock{
+		Type:  "tool_use",
+		ID:    call.ID,
+		Name:  call.Function.Name,
+		Input: input,
+	}
+}
+
 func toolContext(timeout time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), timeout)
 }

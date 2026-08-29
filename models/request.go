@@ -2,6 +2,33 @@ package models
 
 import "encoding/json"
 
+// OpenAIToolFunction describes an OpenAI-compatible function tool.
+type OpenAIToolFunction struct {
+	Name        string                 `json:"name"`
+	Description string                 `json:"description,omitempty"`
+	Parameters  map[string]interface{} `json:"parameters,omitempty"`
+	Strict      *bool                  `json:"strict,omitempty"`
+}
+
+// OpenAITool is an OpenAI-compatible tool definition.
+type OpenAITool struct {
+	Type     string             `json:"type"`
+	Function OpenAIToolFunction `json:"function"`
+}
+
+// OpenAIFunctionCall contains a function name and JSON-encoded arguments.
+type OpenAIFunctionCall struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// OpenAIToolCall is an assistant tool call in Chat Completions format.
+type OpenAIToolCall struct {
+	ID       string             `json:"id"`
+	Type     string             `json:"type"`
+	Function OpenAIFunctionCall `json:"function"`
+}
+
 // ChatCompletionRequest represents an OpenAI-compatible chat request.
 type ChatCompletionRequest struct {
 	Model             string       `json:"model"`
@@ -13,13 +40,18 @@ type ChatCompletionRequest struct {
 	TopP              float64      `json:"top_p,omitempty"`
 	System            string       `json:"system,omitempty"`
 	Attachments       []Attachment `json:"attachments,omitempty"`
+	Tools             []OpenAITool `json:"tools,omitempty"`
+	ToolChoice        interface{}  `json:"tool_choice,omitempty"`
 }
 
 // Message represents an OpenAI-compatible chat message.
 type Message struct {
-	Role        string       `json:"role"`
-	Content     string       `json:"content"`
-	Attachments []Attachment `json:"attachments,omitempty"`
+	Role        string           `json:"role"`
+	Content     interface{}      `json:"content,omitempty"`
+	Name        string           `json:"name,omitempty"`
+	ToolCalls   []OpenAIToolCall `json:"tool_calls,omitempty"`
+	ToolCallID  string           `json:"tool_call_id,omitempty"`
+	Attachments []Attachment     `json:"attachments,omitempty"`
 }
 
 // Attachment represents an attachment accepted by the public API.
@@ -42,6 +74,8 @@ type ResponsesRequest struct {
 	MaxOutputTokens int           `json:"max_output_tokens,omitempty"`
 	Temperature     float64       `json:"temperature,omitempty"`
 	TopP            float64       `json:"top_p,omitempty"`
+	Tools           []OpenAITool  `json:"tools,omitempty"`
+	ToolChoice      interface{}   `json:"tool_choice,omitempty"`
 }
 
 // ResponseInput can be a string or an array of input items.
@@ -73,6 +107,7 @@ type AnthropicRequest struct {
 	Stream         bool               `json:"stream,omitempty"`
 	ConversationID string             `json:"conversation_id,omitempty"`
 	ToolDefs       []AnthropicTool    `json:"tools,omitempty"`
+	ToolChoice     interface{}        `json:"tool_choice,omitempty"`
 	Thinking       interface{}        `json:"thinking,omitempty"`
 	Temperature    float64            `json:"temperature,omitempty"`
 	TopP           float64            `json:"top_p,omitempty"`

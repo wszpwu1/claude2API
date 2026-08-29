@@ -418,23 +418,57 @@ func parseCompletionEvent(eventType, data string) models.ClaudeCompletionEvent {
 	return evt
 }
 
-// BuildPrompt converts OpenAI messages into a single prompt string for claude.ai
+// BuildPrompt converts OpenAI messages into a single prompt string for claude.ai.
 func BuildPrompt(messages []models.Message) string {
 	var parts []string
 	for _, msg := range messages {
+		content := messageContentToText(msg.Content)
 		switch msg.Role {
-		case "system":
-			parts = append(parts, "[System]\n"+msg.Content)
+		case "system", "developer":
+			parts = append(parts, "[System]\n"+content)
 		case "user":
-			parts = append(parts, "[Human]\n"+msg.Content)
+			parts = append(parts, "[Human]\n"+content)
 		case "assistant":
-			parts = append(parts, "[Assistant]\n"+msg.Content)
+			parts = append(parts, "[Assistant]\n"+content)
+		case "tool":
+			parts = append(parts, "[Tool Result: "+msg.ToolCallID+"]\n"+content)
 		default:
-			parts = append(parts, msg.Content)
+			parts = append(parts, content)
 		}
 	}
 	parts = append(parts, "[Assistant]\n")
 	return strings.Join(parts, "\n\n")
+}
+
+func messageContentToText(content interface{}) string {
+	switch value := content.(type) {
+	case nil:
+		return ""
+	case string:
+		return value
+	case []interface{}:
+		var text strings.Builder
+		for _, part := range value {
+			block, ok := part.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			typ, _ := block["type"].(string)
+			if typ != "text" && typ != "input_text" && typ != "output_text" {
+				continue
+			}
+			if value, _ := block["text"].(string); value != "" {
+				text.WriteString(value)
+			}
+		}
+		return text.String()
+	default:
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return ""
+		}
+		return string(encoded)
+	}
 }
 
 // ExtractTextFromSSE extracts text from a claude.ai SSE event

@@ -202,3 +202,94 @@ func TestResolveThinking(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenAIToolsToAnthropic(t *testing.T) {
+	tools := []models.OpenAITool{{
+		Type: "function",
+		Function: models.OpenAIToolFunction{
+			Name:        "lookup",
+			Description: "Look up a value",
+			Parameters: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{"query": map[string]interface{}{"type": "string"}},
+			},
+		},
+	}}
+	converted := openAIToolsToAnthropic(tools)
+	if len(converted) != 1 || converted[0].Name != "lookup" {
+		t.Fatalf("unexpected converted tools: %+v", converted)
+	}
+	if converted[0].InputSchema["type"] != "object" {
+		t.Fatalf("input schema was not preserved: %+v", converted[0].InputSchema)
+	}
+}
+
+func TestToolChoiceBidirectionalTranslation(t *testing.T) {
+	cases := []struct {
+		openAI    interface{}
+		anthropic interface{}
+	}{
+		{"auto", map[string]interface{}{"type": "auto"}},
+		{"none", map[string]interface{}{"type": "none"}},
+		{"required", map[string]interface{}{"type": "any"}},
+		{map[string]interface{}{"type": "function", "function": map[string]interface{}{"name": "lookup"}}, map[string]interface{}{"type": "tool", "name": "lookup"}},
+	}
+	for _, tc := range cases {
+		got := openAIToolChoiceToAnthropic(tc.openAI)
+		gotJSON, _ := json.Marshal(got)
+		wantJSON, _ := json.Marshal(tc.anthropic)
+		if string(gotJSON) != string(wantJSON) {
+			t.Fatalf("OpenAI to Anthropic: got %s, want %s", gotJSON, wantJSON)
+		}
+		roundTrip := anthropicToolChoiceToOpenAI(got)
+		if tc.openAI == "required" {
+			if roundTrip != "required" {
+				t.Fatalf("required round trip = %#v", roundTrip)
+			}
+		}
+	}
+}
+
+func TestToolCallBidirectionalTranslation(t *testing.T) {
+	call := models.OpenAIToolCall{
+		ID:       "call_1",
+		Type:     "function",
+		Function: models.OpenAIFunctionCall{Name: "lookup", Arguments: `{"query":"value"}`},
+	}
+	block := openAIToolCallToAnthropic(call)
+	if block.Type != "tool_use" || block.ID != "call_1" || block.Name != "lookup" || block.Input["query"] != "value" {
+		t.Fatalf("unexpected Anthropic block: %+v", block)
+	}
+	converted := anthropicToolUseToOpenAI(block)
+	if converted.ID != call.ID || converted.Function.Name != call.Function.Name {
+		t.Fatalf("unexpected OpenAI call: %+v", converted)
+	}
+	var arguments map[string]interface{}
+	if err := json.Unmarshal([]byte(converted.Function.Arguments), &arguments); err != nil || arguments["query"] != "value" {
+		t.Fatalf("unexpected arguments: %q (%v)", converted.Function.Arguments, err)
+	}
+}
+
+func TestOpenAIToolCallMalformedArgumentsArePreserved(t *testing.T) {
+	block := openAIToolCallToAnthropic(models.OpenAIToolCall{
+		ID:       "call_bad",
+		Function: models.OpenAIFunctionCall{Name: "lookup", Arguments: "not-json"},
+	})
+	if block.Input["_raw_arguments"] != "not-json" {
+		t.Fatalf("malformed arguments were lost: %+v", block.Input)
+	}
+}
+
+func TestResponseToolOutput(t *testing.T) {
+	items := responseToolOutput([]models.AnthropicContentBlock{
+		{Type: "text", Text: "before"},
+		{Type: "tool_use", ID: "call_1", Name: "lookup", Input: map[string]interface{}{"query": "value"}},
+		{Type: "text", Text: "after"},
+	})
+	if len(items) != 3 {
+		t.Fatalf("expected 3 output items, got %d: %+v", len(items), items)
+	}
+	if items[1].Type != "function_call" || items[1].CallID != "call_1" || items[1].Name != "lookup" {
+		t.Fatalf("unexpected function_call item: %+v", items[1])
+	}
+}

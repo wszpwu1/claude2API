@@ -39,9 +39,18 @@ type ChunkChoice struct {
 	FinishReason *string `json:"finish_reason"`
 }
 
+// OpenAIToolCallDelta is one incremental tool call in a Chat Completions stream.
+type OpenAIToolCallDelta struct {
+	Index    int                `json:"index"`
+	ID       string             `json:"id,omitempty"`
+	Type     string             `json:"type,omitempty"`
+	Function OpenAIFunctionCall `json:"function,omitempty"`
+}
+
 type Delta struct {
-	Role    string `json:"role,omitempty"`
-	Content string `json:"content,omitempty"`
+	Role      string                `json:"role,omitempty"`
+	Content   string                `json:"content,omitempty"`
+	ToolCalls []OpenAIToolCallDelta `json:"tool_calls,omitempty"`
 }
 
 type ModelInfo struct {
@@ -68,11 +77,15 @@ type ResponsesResponse struct {
 }
 
 type ResponseOutputItem struct {
-	Type    string                `json:"type"`
-	ID      string                `json:"id"`
-	Role    string                `json:"role"`
-	Status  string                `json:"status"`
-	Content []ResponseContentPart `json:"content"`
+	Type      string                `json:"type"`
+	ID        string                `json:"id"`
+	Role      string                `json:"role,omitempty"`
+	Status    string                `json:"status"`
+	Content   []ResponseContentPart `json:"content,omitempty"`
+	CallID    string                `json:"call_id,omitempty"`
+	Name      string                `json:"name,omitempty"`
+	Arguments string                `json:"arguments,omitempty"`
+	Output    interface{}           `json:"output,omitempty"`
 }
 
 type ResponseContentPart struct {
@@ -161,6 +174,8 @@ type AnthropicStreamMessageStart struct {
 	Message AnthropicStartMsg `json:"message"`
 }
 
+func (AnthropicStreamMessageStart) SSEEvent() string { return "message_start" }
+
 type AnthropicStartMsg struct {
 	ID           string                  `json:"id"`
 	Type         string                  `json:"type"`
@@ -178,6 +193,8 @@ type AnthropicStreamContentBlockStart struct {
 	ContentBlock AnthropicContentBlock `json:"content_block"`
 }
 
+func (AnthropicStreamContentBlockStart) SSEEvent() string { return "content_block_start" }
+
 type AnthropicStreamDelta struct {
 	Type        string `json:"type"`
 	Text        string `json:"text,omitempty"`
@@ -190,16 +207,22 @@ type AnthropicStreamContentBlockDelta struct {
 	Delta AnthropicStreamDelta `json:"delta"`
 }
 
+func (AnthropicStreamContentBlockDelta) SSEEvent() string { return "content_block_delta" }
+
 type AnthropicStreamContentBlockStop struct {
 	Type  string `json:"type"`
 	Index int    `json:"index"`
 }
+
+func (AnthropicStreamContentBlockStop) SSEEvent() string { return "content_block_stop" }
 
 type AnthropicStreamMessageDelta struct {
 	Type  string             `json:"type"`
 	Delta AnthropicStopDelta `json:"delta"`
 	Usage AnthropicUsage     `json:"usage"`
 }
+
+func (AnthropicStreamMessageDelta) SSEEvent() string { return "message_delta" }
 
 type AnthropicStopDelta struct {
 	StopReason   string  `json:"stop_reason"`
@@ -209,6 +232,8 @@ type AnthropicStopDelta struct {
 type AnthropicStreamMessageStop struct {
 	Type string `json:"type"`
 }
+
+func (AnthropicStreamMessageStop) SSEEvent() string { return "message_stop" }
 
 // ClaudeOrganization represents an organization returned by claude.ai.
 type ClaudeOrganization struct {
