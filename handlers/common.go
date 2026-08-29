@@ -310,11 +310,16 @@ func (h *Handler) runCompletion(ctx context.Context, client *claude.Client, prom
 	return thinkingBuf.String(), sb.String(), nil
 }
 
-// writeSSE writes a "data: {...}\n\n" SSE line
+// writeSSE writes a Server-Sent Event. Anthropic clients such as Roo Code
+// require the named event line in addition to the JSON data line; without it,
+// the stream can be consumed without producing any assistant messages.
 func writeSSE(w io.Writer, payload interface{}) {
 	b, err := json.Marshal(payload)
 	if err != nil {
 		return
+	}
+	if event, ok := payload.(interface{ SSEEvent() string }); ok {
+		_, _ = io.WriteString(w, "event: "+event.SSEEvent()+"\n")
 	}
 	_, _ = io.WriteString(w, "data: "+string(b)+"\n\n")
 }
