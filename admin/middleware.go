@@ -49,7 +49,7 @@ func (m *RuntimeMiddleware) SetRateLimit(config RateLimitConfig) error {
 func (m *RuntimeMiddleware) Handler() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		state := m.store.Snapshot()
-		if len(state.APIKeys) > 0 && !m.validateAPIKey(c, state.APIKeys) {
+		if (state.MasterKey.Enabled || len(state.APIKeys) > 0) && !m.validateAPIKey(c, state.MasterKey, state.APIKeys) {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": gin.H{"message": "invalid API key", "type": "unauthorized"}})
 			return
 		}
@@ -64,17 +64,24 @@ func (m *RuntimeMiddleware) Handler() gin.HandlerFunc {
 		startedAt := time.Now()
 		finish := m.metrics.Begin()
 		c.Next()
-		success := c.Writer.Status() >= 200 && c.Writer.Status() < 400
+		status := c.Writer.Status()
+		success := status >= 200 && status < 400
 		finish(success)
 
 		accountID, _ := c.Get("accountID")
 		if id, ok := accountID.(string); ok && strings.TrimSpace(id) != "" {
-			_ = m.recordAccountUsage(id, success, time.Since(startedAt), time.Now().UTC())
+			model, _ := c.Get("requestModel")
+			inputTokens, _ := c.Get("inputTokens")
+			outputTokens, _ := c.Get("outputTokens")
+			modelName, _ := model.(string)
+			inputCount, _ := inputTokens.(int64)
+			outputCount, _ := outputTokens.(int64)
+			_ = m.recordAccountUsage(id, modelName, status, success, time.Since(startedAt), inputCount, outputCount, time.Now().UTC())
 		}
 	}
 }
 
-func (m *RuntimeMiddleware) validateAPIKey(c *gin.Context, keys []APIKey) bool {
+func (m *RuntimeMiddleware) validateAPIKey(c *gin.Context, masterKey MasterKeyConfig, keys []APIKey) bool {
 	raw := strings.TrimSpace(c.GetHeader("X-API-Key"))
 	if raw == "" {
 		authorization := strings.TrimSpace(c.GetHeader("Authorization"))
@@ -87,6 +94,15 @@ func (m *RuntimeMiddleware) validateAPIKey(c *gin.Context, keys []APIKey) bool {
 	}
 	digest := sha256.Sum256([]byte(raw))
 	hash := hex.EncodeToString(digest[:])
+	if masterKey.Enabled && constantTimeEqual(masterKey.KeyHash, hash) {
+		now := time.Now().UTC()
+		_ = m.store.Update(func(state *PersistentState) error {
+			state.MasterKey.LastUsedAt = &now
+			return nil
+		})
+		c.Set("masterKey", true)
+		return true
+	}
 	for _, key := range keys {
 		if key.Enabled && constantTimeEqual(key.KeyHash, hash) {
 			now := time.Now().UTC()
@@ -105,13 +121,15 @@ func (m *RuntimeMiddleware) validateAPIKey(c *gin.Context, keys []APIKey) bool {
 	return false
 }
 
-func (m *RuntimeMiddleware) recordAccountUsage(accountID string, success bool, latency time.Duration, now time.Time) error {
+func (m *RuntimeMiddleware) recordAccountUsage(accountID, model string, status int, success bool, latency time.Duration, inputTokens, outputTokens int64, now time.Time) error {
 	date := now.Format("2006-01-02")
 	return m.store.Update(func(state *PersistentState) error {
+		accountName := accountID
 		for index := range state.Accounts {
 			if state.Accounts[index].ID != accountID {
 				continue
 			}
+			accountName = state.Accounts[index].Name
 			state.Accounts[index].RequestCount++
 			state.Accounts[index].SessionUsed++
 			if success {
@@ -120,6 +138,10 @@ func (m *RuntimeMiddleware) recordAccountUsage(accountID string, success bool, l
 				state.Accounts[index].FailureCount++
 			}
 			break
+		}
+		state.RecentRequests = append([]RecentRequest{{Time: now, Model: model, AccountID: accountID, Account: accountName, Status: status, Success: success, LatencyMS: latency.Milliseconds(), InputToken: inputTokens, OutputToken: outputTokens}}, state.RecentRequests...)
+		if len(state.RecentRequests) > 100 {
+			state.RecentRequests = state.RecentRequests[:100]
 		}
 
 		state.DailyUsage = PruneUsage(state.DailyUsage, now)

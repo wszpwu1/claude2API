@@ -47,6 +47,7 @@ func NewStore(path, initialPassword string) (*Store, error) {
 			Accounts:          []Account{},
 			APIKeys:           []APIKey{},
 			DailyUsage:        []DailyUsage{},
+			RecentRequests:    []RecentRequest{},
 			RateLimit: RateLimitConfig{
 				RequestsPerMinute: 60,
 				Burst:             10,
@@ -85,6 +86,9 @@ func (s *Store) load() error {
 	}
 	if s.state.DailyUsage == nil {
 		s.state.DailyUsage = []DailyUsage{}
+	}
+	if s.state.RecentRequests == nil {
+		s.state.RecentRequests = []RecentRequest{}
 	}
 	if s.state.RateLimit.RequestsPerMinute < 1 {
 		s.state.RateLimit.RequestsPerMinute = 60

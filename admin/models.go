@@ -5,6 +5,7 @@ import "time"
 // PersistentState is the management panel's durable configuration and runtime metadata.
 type PersistentState struct {
 	AdminPasswordHash string          `json:"admin_password_hash"`
+	MasterKey         MasterKeyConfig `json:"master_key"`
 	Accounts          []Account       `json:"accounts"`
 	APIKeys           []APIKey        `json:"api_keys"`
 	Proxy             ProxyConfig     `json:"proxy"`
@@ -12,6 +13,7 @@ type PersistentState struct {
 	KeepAlive         KeepAliveConfig `json:"keep_alive"`
 	Settings          PanelSettings   `json:"settings"`
 	DailyUsage        []DailyUsage    `json:"daily_usage"`
+	RecentRequests    []RecentRequest `json:"recent_requests"`
 }
 
 // Account describes one managed claude.ai account. Secrets are never returned directly by management APIs.
@@ -33,6 +35,16 @@ type Account struct {
 	LastCheckedAt    time.Time `json:"last_checked_at,omitempty"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+// MasterKeyConfig is the optional global credential that grants access to the
+// shared account pool. Only its hash and a display-safe prefix are persisted.
+type MasterKeyConfig struct {
+	KeyHash    string     `json:"key_hash"`
+	KeyPrefix  string     `json:"key_prefix"`
+	Enabled    bool       `json:"enabled"`
+	UpdatedAt  time.Time  `json:"updated_at,omitempty"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
 }
 
 // APIKey is an API credential accepted by the public endpoints.
@@ -83,6 +95,19 @@ type DailyUsage struct {
 	Successes      int64  `json:"successes"`
 	Failures       int64  `json:"failures"`
 	LatencyTotalMS int64  `json:"latency_total_ms"`
+}
+
+// RecentRequest stores one completed request for the dashboard's recent-request list.
+type RecentRequest struct {
+	Time        time.Time `json:"time"`
+	Model       string    `json:"model"`
+	AccountID   string    `json:"account_id"`
+	Account     string    `json:"account"`
+	Status      int       `json:"status"`
+	Success     bool      `json:"success"`
+	LatencyMS   int64     `json:"latency_ms"`
+	InputToken  int64     `json:"input_tokens"`
+	OutputToken int64     `json:"output_tokens"`
 }
 
 // MetricsSnapshot is returned by the real-time metrics endpoint.

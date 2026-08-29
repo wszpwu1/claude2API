@@ -87,10 +87,13 @@ func (a *API) RegisterRoutes(router *gin.Engine) {
 	protected.GET("/state", a.state)
 	protected.GET("/metrics", a.getMetrics)
 	protected.GET("/usage", a.getUsage)
+	protected.GET("/recent-requests", a.getRecentRequests)
 	protected.GET("/accounts", a.listAccounts)
 	protected.POST("/accounts", a.addAccount)
 	protected.POST("/accounts/import", a.importAccounts)
 	protected.POST("/accounts/check", a.checkAccounts)
+	protected.POST("/accounts/restore", a.restoreAccounts)
+	protected.DELETE("/accounts/blocked", a.deleteBlockedAccounts)
 	protected.PUT("/accounts/:id", a.updateAccount)
 	protected.PATCH("/accounts/:id/status", a.updateAccountStatus)
 	protected.POST("/accounts/:id/restore", a.restoreAccount)
@@ -103,6 +106,9 @@ func (a *API) RegisterRoutes(router *gin.Engine) {
 	protected.PUT("/rate-limit", a.updateRateLimit)
 	protected.GET("/keep-alive", a.getKeepAlive)
 	protected.PUT("/keep-alive", a.updateKeepAlive)
+	protected.GET("/master-key", a.getMasterKey)
+	protected.PUT("/master-key", a.updateMasterKey)
+	protected.DELETE("/master-key", a.deleteMasterKey)
 	protected.GET("/api-keys", a.listAPIKeys)
 	protected.POST("/api-keys", a.createAPIKey)
 	protected.PUT("/api-keys/:id", a.updateAPIKey)
@@ -162,6 +168,7 @@ func (a *API) changePassword(c *gin.Context) {
 func (a *API) state(c *gin.Context) {
 	state := a.store.Snapshot()
 	state.AdminPasswordHash = ""
+	state.MasterKey.KeyHash = ""
 	for index := range state.Accounts {
 		prepareAccountForResponse(&state.Accounts[index])
 	}
@@ -179,6 +186,14 @@ func (a *API) getUsage(c *gin.Context) {
 	state := a.store.Snapshot()
 	usage := PruneUsage(state.DailyUsage, time.Now().UTC())
 	c.JSON(http.StatusOK, gin.H{"daily_usage": usage})
+}
+
+func (a *API) getRecentRequests(c *gin.Context) {
+	requests := a.store.Snapshot().RecentRequests
+	if len(requests) > 50 {
+		requests = requests[:50]
+	}
+	c.JSON(http.StatusOK, gin.H{"recent_requests": requests})
 }
 
 type accountRequest struct {
@@ -249,6 +264,63 @@ func (a *API) checkAccounts(c *gin.Context) {
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{"checked": checked, "healthy": healthy, "unhealthy": checked - healthy})
+}
+
+func (a *API) restoreAccounts(c *gin.Context) {
+	if a.onAccountRestore == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"message": "account restore is unavailable", "type": "runtime_error"}})
+		return
+	}
+	accounts := a.store.Snapshot().Accounts
+	restored := 0
+	for _, account := range accounts {
+		if !account.Enabled || !a.onAccountRestore(account.ID) {
+			continue
+		}
+		restored++
+	}
+	if err := a.store.Update(func(state *PersistentState) error {
+		now := time.Now().UTC()
+		for index := range state.Accounts {
+			if state.Accounts[index].Enabled {
+				state.Accounts[index].Status = "ready"
+				state.Accounts[index].StatusMessage = ""
+				state.Accounts[index].UpdatedAt = now
+			}
+		}
+		return nil
+	}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": err.Error(), "type": "storage_error"}})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"restored": restored})
+}
+
+func (a *API) deleteBlockedAccounts(c *gin.Context) {
+	deleted := 0
+	if err := a.store.Update(func(state *PersistentState) error {
+		kept := state.Accounts[:0]
+		for _, account := range state.Accounts {
+			status := strings.ToLower(account.Status)
+			if strings.Contains(status, "ban") || strings.Contains(status, "block") {
+				deleted++
+				continue
+			}
+			kept = append(kept, account)
+		}
+		state.Accounts = kept
+		return nil
+	}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": err.Error(), "type": "storage_error"}})
+		return
+	}
+	if deleted > 0 {
+		if err := a.notifyAccountsChanged(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": err.Error(), "type": "runtime_refresh_error"}})
+			return
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"deleted": deleted})
 }
 
 func (a *API) restoreAccount(c *gin.Context) {
@@ -692,6 +764,74 @@ func (a *API) updateKeepAlive(c *gin.Context) {
 		}
 	}
 	c.JSON(http.StatusOK, request)
+}
+
+type updateMasterKeyRequest struct {
+	Key     string `json:"key"`
+	Enabled *bool  `json:"enabled"`
+}
+
+func (a *API) getMasterKey(c *gin.Context) {
+	config := a.store.Snapshot().MasterKey
+	config.KeyHash = ""
+	c.JSON(http.StatusOK, config)
+}
+
+func (a *API) updateMasterKey(c *gin.Context) {
+	var request updateMasterKeyRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": "invalid master-key payload", "type": "invalid_request_error"}})
+		return
+	}
+
+	rawKey := strings.TrimSpace(request.Key)
+	if rawKey != "" && (len(rawKey) < 16 || len(rawKey) > 256) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": "master key must contain between 16 and 256 characters", "type": "invalid_request_error"}})
+		return
+	}
+	current := a.store.Snapshot().MasterKey
+	if rawKey == "" && current.KeyHash == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": "key is required when configuring the master key for the first time", "type": "invalid_request_error"}})
+		return
+	}
+
+	if err := a.store.Update(func(state *PersistentState) error {
+		if rawKey != "" {
+			digest := sha256.Sum256([]byte(rawKey))
+			state.MasterKey.KeyHash = hex.EncodeToString(digest[:])
+			prefixLength := 12
+			if len(rawKey) < prefixLength {
+				prefixLength = len(rawKey)
+			}
+			state.MasterKey.KeyPrefix = rawKey[:prefixLength]
+			state.MasterKey.UpdatedAt = time.Now().UTC()
+			state.MasterKey.LastUsedAt = nil
+		}
+		if request.Enabled != nil {
+			state.MasterKey.Enabled = *request.Enabled
+		} else if rawKey != "" {
+			state.MasterKey.Enabled = true
+		}
+		return nil
+	}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": err.Error(), "type": "storage_error"}})
+		return
+	}
+
+	config := a.store.Snapshot().MasterKey
+	config.KeyHash = ""
+	c.JSON(http.StatusOK, config)
+}
+
+func (a *API) deleteMasterKey(c *gin.Context) {
+	if err := a.store.Update(func(state *PersistentState) error {
+		state.MasterKey = MasterKeyConfig{}
+		return nil
+	}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": err.Error(), "type": "storage_error"}})
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 type createAPIKeyRequest struct {
