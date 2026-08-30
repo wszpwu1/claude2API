@@ -332,8 +332,10 @@ func (h *Handler) anthropicNonStream(c *gin.Context, client *claude.Client, prom
 		upstreamError(c, err.Error())
 		return
 	}
-	c.Set("inputTokens", int64(len([]rune(prompt))/4))
-	c.Set("outputTokens", int64(len([]rune(content))/4))
+	inputTokens := len([]rune(prompt)) / 4
+	outputTokens := len([]rune(content)) / 4
+	c.Set("inputTokens", int64(inputTokens))
+	c.Set("outputTokens", int64(outputTokens))
 	resp := models.AnthropicResponse{
 		ID:         genID("msg_"),
 		Type:       "message",
@@ -342,7 +344,8 @@ func (h *Handler) anthropicNonStream(c *gin.Context, client *claude.Client, prom
 		Model:      claudeModel,
 		StopReason: "end_turn",
 		Usage: models.AnthropicUsage{
-			OutputTokens: len(content) / 4,
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
 		},
 	}
 	c.JSON(http.StatusOK, resp)
@@ -671,12 +674,15 @@ func buildToolDefsPrompt(tools []models.AnthropicTool, toolChoice interface{}) s
 	}
 	var sb strings.Builder
 	sb.WriteString("[Tools]\n")
-	sb.WriteString("You have access to the following tools. When you need to use a tool, emit EXACTLY one block per call using this format, and NOTHING else around the block:\n")
+	sb.WriteString("You have access to the following tools. When you need to use a tool, emit EXACTLY one block per call using this format:\n")
 	sb.WriteString("  [TOOL_CALL]{\"name\":\"<tool_name>\",\"id\":\"<unique_id>\",\"input\":{...}}[/TOOL_CALL]\n")
-	sb.WriteString("Rules:\n")
+	sb.WriteString("CRITICAL FORMAT RULES — failure to follow these will break the system:\n")
+	sb.WriteString("- Do NOT wrap the block in markdown code fences (no ```json ... ```).\n")
+	sb.WriteString("- Do NOT pretty-print or indent the JSON inside the block — keep it on ONE line.\n")
+	sb.WriteString("- Do NOT add any text between [TOOL_CALL] and the opening { or between } and [/TOOL_CALL].\n")
 	sb.WriteString("- 'id' must be unique per call, e.g. \"toolu_1\", \"toolu_2\".\n")
-	sb.WriteString("- 'input' must match the tool's input_schema.\n")
-	sb.WriteString("- You may include explanatory text before or after the block.\n")
+	sb.WriteString("- 'input' must match the tool's input_schema exactly.\n")
+	sb.WriteString("- You may include explanatory text BEFORE or AFTER the block, but never inside it.\n")
 
 	// Inject tool_choice constraint so the model honours the caller's selection policy.
 	choiceType := ""

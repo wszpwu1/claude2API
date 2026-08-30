@@ -5,6 +5,8 @@ import (
 	"time"
 )
 
+const conversationTTL = 24 * time.Hour
+
 type conversationState struct {
 	mu                   sync.Mutex
 	ClientConversationID string
@@ -21,7 +23,35 @@ type conversationStore struct {
 }
 
 func newConversationStore() *conversationStore {
-	return &conversationStore{data: make(map[string]*conversationState)}
+	s := &conversationStore{data: make(map[string]*conversationState)}
+	go s.gcLoop()
+	return s
+}
+
+// gcLoop periodically evicts conversation states that have not been used
+// within conversationTTL. This prevents unbounded memory growth on long-running
+// instances that accumulate many short-lived stateless conversations.
+func (s *conversationStore) gcLoop() {
+	ticker := time.NewTicker(30 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		s.gc()
+	}
+}
+
+func (s *conversationStore) gc() {
+	cutoff := time.Now().Add(-conversationTTL)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key, state := range s.data {
+		// Only evict states whose mutex is not held (i.e. no active request).
+		if state.mu.TryLock() {
+			if state.UpdatedAt.Before(cutoff) {
+				delete(s.data, key)
+			}
+			state.mu.Unlock()
+		}
+	}
 }
 
 func conversationKey(accountID, conversationID string) string {

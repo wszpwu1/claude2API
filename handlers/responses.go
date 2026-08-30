@@ -313,6 +313,8 @@ func (h *Handler) responsesStream(c *gin.Context, client *claude.Client, prompt,
 	if err != nil {
 		status = "failed"
 	}
+	inputTokens := len([]rune(prompt)) / 4
+	outputTokens := len([]rune(full.String())) / 4
 	writeSSE(c.Writer, models.ResponsesCompleted{
 		Type: "response.completed",
 		Response: models.ResponsesResponse{
@@ -321,7 +323,7 @@ func (h *Handler) responsesStream(c *gin.Context, client *claude.Client, prompt,
 				Type: "message", ID: msgID, Role: "assistant", Status: status,
 				Content: []models.ResponseContentPart{{Type: "output_text", Text: full.String()}},
 			}},
-			Usage: models.ResponsesUsage{OutputTokens: full.Len() / 4, TotalTokens: full.Len() / 4},
+			Usage: models.ResponsesUsage{InputTokens: inputTokens, OutputTokens: outputTokens, TotalTokens: inputTokens + outputTokens},
 		},
 	})
 	if flusher != nil {

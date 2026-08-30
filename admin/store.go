@@ -20,9 +20,10 @@ const passwordHashVersion = "sha256-v1"
 // Store provides synchronized access to management configuration and persists
 // every mutation atomically to disk.
 type Store struct {
-	mu    sync.RWMutex
-	path  string
-	state PersistentState
+	mu            sync.RWMutex
+	path          string
+	state         PersistentState
+	authChangedCb func(authCache) // notified after MasterKey/APIKeys change
 }
 
 // NewStore loads an existing state file or creates one with secure defaults.
@@ -115,24 +116,82 @@ func (s *Store) Snapshot() PersistentState {
 	return snapshot
 }
 
+// SnapshotAuth returns a lightweight copy of only the auth-relevant fields.
+// This avoids the full state clone on every API request in the hot path.
+func (s *Store) SnapshotAuth() authCache {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	// Deep-copy APIKeys slice so callers cannot mutate store state.
+	keys := make([]APIKey, len(s.state.APIKeys))
+	copy(keys, s.state.APIKeys)
+	return authCache{
+		masterKey: s.state.MasterKey,
+		apiKeys:   keys,
+	}
+}
+
+// SnapshotRateLimit returns a copy of the current rate-limit configuration.
+func (s *Store) SnapshotRateLimit() RateLimitConfig {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.state.RateLimit
+}
+
+// OnAuthChanged registers a callback that is invoked after every Store.Update
+// that modifies MasterKey or APIKeys. The callback receives a fresh authCache.
+// Only one callback is supported; calling OnAuthChanged again replaces the previous one.
+func (s *Store) OnAuthChanged(fn func(authCache)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.authChangedCb = fn
+}
+
 // Update applies a mutation while holding the store lock and commits it only
 // when both the mutation and persistence succeed. A failed save restores the
 // previous in-memory state so runtime state cannot diverge from disk.
+// After a successful save, if MasterKey or APIKeys changed, any registered
+// authChangedCb is called outside the lock so it can re-read auth state.
 func (s *Store) Update(fn func(*PersistentState) error) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	previous, err := clonePersistentState(s.state)
 	if err != nil {
+		s.mu.Unlock()
 		return fmt.Errorf("snapshot admin state before update: %w", err)
 	}
 	if err := fn(&s.state); err != nil {
 		s.state = previous
+		s.mu.Unlock()
 		return err
 	}
 	if err := s.saveLocked(); err != nil {
 		s.state = previous
+		s.mu.Unlock()
 		return err
+	}
+
+	// Detect auth changes before releasing the lock.
+	authDirty := s.state.MasterKey != previous.MasterKey || len(s.state.APIKeys) != len(previous.APIKeys)
+	if !authDirty {
+		for i := range s.state.APIKeys {
+			if s.state.APIKeys[i] != previous.APIKeys[i] {
+				authDirty = true
+				break
+			}
+		}
+	}
+	var cb func(authCache)
+	var snap authCache
+	if authDirty && s.authChangedCb != nil {
+		cb = s.authChangedCb
+		keys := make([]APIKey, len(s.state.APIKeys))
+		copy(keys, s.state.APIKeys)
+		snap = authCache{masterKey: s.state.MasterKey, apiKeys: keys}
+	}
+	s.mu.Unlock()
+
+	if cb != nil {
+		cb(snap)
 	}
 	return nil
 }

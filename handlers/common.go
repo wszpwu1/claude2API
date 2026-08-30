@@ -316,7 +316,11 @@ func (h *Handler) runCompletion(ctx context.Context, client *claude.Client, prom
 	// to suppress the default web tools (e.g. tool-simulation loop).
 	toolsPayload := claude.WebTools()
 	if tools != nil {
-		toolsPayload = tools[0]
+		if len(tools) > 0 {
+			toolsPayload = tools[0]
+		} else {
+			toolsPayload = json.RawMessage("[]")
+		}
 	}
 
 	// Build the real request body matching claude.ai's format

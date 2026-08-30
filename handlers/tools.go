@@ -27,7 +27,9 @@ type toolCall struct {
 	Raw   string
 }
 
-var toolCallRe = regexp.MustCompile(`(?s)\[TOOL_CALL\]\s*(\{[\s\S]*?\})\s*\[/TOOL_CALL\]`)
+// toolCallRe matches [TOOL_CALL]{...}[/TOOL_CALL], tolerating optional code
+// fences (```json ... ```) that Claude sometimes wraps around the block.
+var toolCallRe = regexp.MustCompile("(?s)(?:```(?:json)?\\s*)?\\[TOOL_CALL\\]\\s*(\\{[\\s\\S]*?\\})\\s*\\[/TOOL_CALL\\](?:\\s*```)?")
 
 // extractToolCalls parses all tool calls embedded in the model's text.
 // Returns the text stripped of tool-call markers, and the parsed calls.
@@ -35,7 +37,10 @@ var toolCallRe = regexp.MustCompile(`(?s)\[TOOL_CALL\]\s*(\{[\s\S]*?\})\s*\[/TOO
 // the stripped output is assembled while iterating, and JSON is decoded
 // in-line — avoiding the redundant second regex scan of ReplaceAllString.
 func extractToolCalls(text string) (string, []toolCall) {
-	indices := toolCallRe.FindAllStringSubmatchIndex(text, -1)
+	// Pre-process: strip code fences that wrap only [TOOL_CALL] content so the
+	// regex can match even when Claude buries the markers inside a code block.
+	preprocessed := stripToolCallCodeFences(text)
+	indices := toolCallRe.FindAllStringSubmatchIndex(preprocessed, -1)
 	if len(indices) == 0 {
 		return text, nil
 	}
@@ -44,13 +49,19 @@ func extractToolCalls(text string) (string, []toolCall) {
 	prev := 0
 	for _, loc := range indices {
 		// Append the plain text that precedes this match.
-		sb.WriteString(text[prev:loc[0]])
+		sb.WriteString(preprocessed[prev:loc[0]])
 		prev = loc[1]
 
 		// loc[2]:loc[3] is capture group 1 — the raw JSON payload.
+		jsonBytes := []byte(preprocessed[loc[2]:loc[3]])
 		var raw map[string]interface{}
-		if err := json.Unmarshal([]byte(text[loc[2]:loc[3]]), &raw); err != nil {
-			continue
+		if err := json.Unmarshal(jsonBytes, &raw); err != nil {
+			// Try to salvage by collapsing interior whitespace: Claude sometimes
+			// pretty-prints JSON which is valid but confuses downstream parsers.
+			compact := compactJSON(jsonBytes)
+			if err2 := json.Unmarshal(compact, &raw); err2 != nil {
+				continue
+			}
 		}
 		name, _ := raw["name"].(string)
 		if name == "" {
@@ -71,10 +82,38 @@ func extractToolCalls(text string) (string, []toolCall) {
 				input[k] = v
 			}
 		}
-		calls = append(calls, toolCall{Name: name, ID: id, Input: input, Raw: text[loc[0]:loc[1]]})
+		calls = append(calls, toolCall{Name: name, ID: id, Input: input, Raw: preprocessed[loc[0]:loc[1]]})
 	}
-	sb.WriteString(text[prev:])
+	sb.WriteString(preprocessed[prev:])
 	return sb.String(), calls
+}
+
+// stripToolCallCodeFences removes code fences that surround [TOOL_CALL] blocks.
+// Claude sometimes writes:
+//
+//	```json
+//	[TOOL_CALL]{...}[/TOOL_CALL]
+//	```
+//
+// This strips the fence so the regex can match cleanly.
+var codeFenceToolCallRe = regexp.MustCompile("(?s)```(?:json)?\\s*(\\[TOOL_CALL\\][\\s\\S]*?\\[/TOOL_CALL\\])\\s*```")
+
+func stripToolCallCodeFences(text string) string {
+	return codeFenceToolCallRe.ReplaceAllString(text, "$1")
+}
+
+// compactJSON re-encodes JSON bytes using the standard encoder so whitespace
+// and minor formatting differences don't prevent unmarshalling.
+func compactJSON(src []byte) []byte {
+	var v interface{}
+	if err := json.Unmarshal(src, &v); err != nil {
+		return src
+	}
+	out, err := json.Marshal(v)
+	if err != nil {
+		return src
+	}
+	return out
 }
 
 // openAIToolsToAnthropic converts OpenAI/New API function definitions into
