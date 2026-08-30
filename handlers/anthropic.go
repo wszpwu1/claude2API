@@ -584,11 +584,15 @@ func (h *Handler) anthropicToolStream(c *gin.Context, client *claude.Client, req
 	}
 }
 
-// runToolLoop sends a single tool-enabled prompt to claude.ai, parses any
+// runToolLoop sends a tool-enabled prompt to claude.ai, parses any
 // [TOOL_CALL] blocks the model emits, and returns the assembled content
 // blocks together with usage estimates. Tool execution is intentionally
 // delegated back to the caller (e.g. RooCode) via tool_use blocks so it
 // can run tools in its own workspace rather than the proxy's filesystem.
+//
+// If the model fails to emit any tool calls on the first round and the
+// request's tool_choice requires tool use, one retry is attempted with an
+// explicit nudge so the model does not silently fall back to plain text.
 func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req models.AnthropicRequest, claudeModel, effort, accountID string) ([]models.AnthropicContentBlock, models.AnthropicUsage, error) {
 	toolDefText := buildToolDefsPrompt(req.ToolDefs, req.ToolChoice)
 	emptyTools := json.RawMessage([]byte("[]"))
@@ -606,8 +610,6 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 		return nil, models.AnthropicUsage{}, err
 	}
 
-	// totalInputChars counts the prompt plus what the model returned so the
-	// token estimate reflects the full in/out text volume for this round.
 	totalInputChars := len(prompt) + len(content)
 
 	var allBlocks []models.AnthropicContentBlock
@@ -617,6 +619,29 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 	}
 
 	text, calls := extractToolCalls(content)
+
+	// If the model returned no tool calls but tool use is required, do one
+	// retry with an explicit nudge before giving up and returning plain text.
+	// This handles cases where the model answers in prose instead of calling
+	// a tool, or where it cannot locate a file and needs prompting to use Glob.
+	if len(calls) == 0 && toolChoiceRequiresTools(req.ToolChoice) {
+		nudge := buildToolNudge(content, req.ToolDefs)
+		retryPrompt := prompt + "\n\n[Assistant]\n" + content + "\n\n" + nudge
+		_, retryContent, retryErr := h.runCompletion(ctx, client, retryPrompt, claudeModel, effort, req.ConversationID, accountID, nil, []json.RawMessage{emptyTools}, thinkingMode)
+		if retryErr == nil && retryContent != "" {
+			totalInputChars += len(retryPrompt) + len(retryContent)
+			// Replace the original plain-text response with the retry output.
+			text, calls = extractToolCalls(retryContent)
+			if len(calls) > 0 {
+				// Retry produced tool calls — discard earlier thinking/text.
+				allBlocks = nil
+			} else {
+				// Still no calls: keep retry text so the caller gets something.
+				text = retryContent
+			}
+		}
+	}
+
 	if text != "" {
 		allBlocks = append(allBlocks, models.AnthropicContentBlock{Type: "text", Text: text})
 	}
@@ -634,6 +659,51 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 		OutputTokens: totalOutputTokens(allBlocks),
 	}
 	return allBlocks, usage, nil
+}
+
+// toolChoiceRequiresTools reports whether the caller's tool_choice mandates
+// at least one tool call (i.e. "any" or a specific named tool).
+func toolChoiceRequiresTools(toolChoice interface{}) bool {
+	m, ok := toolChoice.(map[string]interface{})
+	if !ok {
+		return false
+	}
+	typ, _ := m["type"].(string)
+	return typ == "any" || typ == "tool"
+}
+
+// buildToolNudge builds the human-turn nudge message that is appended when
+// the model fails to emit any tool calls on the first round.
+// It reminds the model about available tools and, if file-access tools are
+// present, explicitly tells it to use Glob before guessing a path.
+func buildToolNudge(priorText string, tools []models.AnthropicTool) string {
+	// Collect tool names so the nudge can list them.
+	names := make([]string, 0, len(tools))
+	hasFileTools := false
+	for _, t := range tools {
+		names = append(names, t.Name)
+		if t.Name == "Glob" || t.Name == "Read" || t.Name == "Bash" {
+			hasFileTools = true
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString("[Human]\n")
+	sb.WriteString("You responded with plain text but you must call a tool.\n")
+	sb.WriteString("Available tools: ")
+	sb.WriteString(strings.Join(names, ", "))
+	sb.WriteString(".\n")
+
+	if hasFileTools {
+		sb.WriteString("If you cannot find a file, call Glob first:\n")
+		sb.WriteString("  [TOOL_CALL]{\"name\":\"Glob\",\"id\":\"toolu_retry_1\",\"input\":{\"pattern\":\"**/*\",\"path\":\".\"}}[/TOOL_CALL]\n")
+		sb.WriteString("Then use Read with the exact path Glob returns.\n")
+	}
+
+	sb.WriteString("Emit a [TOOL_CALL]...[/TOOL_CALL] block now. Do NOT answer in prose.")
+	// Suppress the prior prose so the model doesn't repeat it.
+	_ = priorText
+	return sb.String()
 }
 
 func containsToolUse(blocks []models.AnthropicContentBlock) bool {
@@ -710,6 +780,11 @@ func buildToolDefsPrompt(tools []models.AnthropicTool, toolChoice interface{}) s
 		sb.WriteString("- If no tool is needed, just respond normally.\n")
 	}
 
+	sb.WriteString("\nFILE ACCESS RULES — always follow these when using Read or Glob:\n")
+	sb.WriteString("- NEVER guess or invent a file path. If a path is uncertain, call Glob first.\n")
+	sb.WriteString("- If Read returns \"file not found\", call Glob with pattern=\"**/<filename>\" to locate the real path before retrying.\n")
+	sb.WriteString("- After Glob returns results, call Read with the exact path from those results.\n")
+	sb.WriteString("- Do NOT fabricate paths like \"/project/src/foo.go\" unless Glob confirmed them.\n")
 	sb.WriteString("\nAvailable tools (JSON):\n")
 	b, _ := json.MarshalIndent(tools, "", "  ")
 	sb.Write(b)

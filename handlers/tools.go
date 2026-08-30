@@ -285,7 +285,32 @@ func toolRead(input map[string]interface{}) string {
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Sprintf("ERROR: read %s: %v", path, err)
+		// File not found: list the parent directory so the model can see real
+		// filenames and correct the path — never guess or fabricate a new path.
+		parent := filepath.Dir(path)
+		var listing string
+		entries, dirErr := os.ReadDir(parent)
+		if dirErr == nil && len(entries) > 0 {
+			names := make([]string, 0, len(entries))
+			for _, e := range entries {
+				if e.IsDir() {
+					names = append(names, e.Name()+"/")
+				} else {
+					names = append(names, e.Name())
+				}
+			}
+			listing = strings.Join(names, "\n")
+		} else {
+			listing = "(unable to list directory)"
+		}
+		return fmt.Sprintf(
+			"ERROR: file not found: %s\n\n"+
+				"IMPORTANT: Do NOT guess or invent another path.\n"+
+				"Use the Glob tool to search for the correct file, e.g.:\n"+
+				"  Glob pattern=\"**/%s\" path=\".\"\n\n"+
+				"Actual contents of parent directory (%s):\n%s",
+			path, filepath.Base(path), parent, listing,
+		)
 	}
 	if isMediaFile(path) {
 		mediaType := mime.TypeByExtension(strings.ToLower(filepath.Ext(path)))
@@ -364,13 +389,59 @@ func toolGlob(input map[string]interface{}) string {
 		path = "."
 	}
 	matches, err := doublestar.Glob(os.DirFS(path), pattern, doublestar.WithFilesOnly())
-	if err != nil {
-		return fmt.Sprintf("ERROR: glob %s: %v", pattern, err)
+	if err != nil || len(matches) == 0 {
+		// Fall back to OS-level listing so the model gets real paths instead of guessing.
+		fallback := globFallback(path, pattern)
+		if err != nil {
+			return fmt.Sprintf("ERROR: glob %s: %v\n%s", pattern, err, fallback)
+		}
+		return fallback
 	}
 	if len(matches) > 2000 {
 		matches = matches[:2000]
 	}
 	return strings.Join(matches, "\n")
+}
+
+// globFallback uses the OS shell to list files when the doublestar glob finds
+// nothing, so the model always sees real filenames and never guesses paths.
+func globFallback(path, pattern string) string {
+	ctx, cancel := toolContext(30 * time.Second)
+	defer cancel()
+
+	var cmd *exec.Cmd
+	if os.PathSeparator == '/' {
+		// On Linux/Mac, use find with the basename part of the pattern.
+		base := filepath.Base(pattern)
+		if base == "" || base == "." || base == "*" {
+			base = "*"
+		}
+		cmd = exec.CommandContext(ctx, "find", path, "-name", base, "-type", "f")
+	} else {
+		// On Windows, use dir /s /b; escape the path properly.
+		dirTarget := filepath.Join(path)
+		cmd = exec.CommandContext(ctx, "cmd", "/c", "dir", "/s", "/b", dirTarget)
+	}
+
+	out, _ := cmd.CombinedOutput()
+	result := strings.TrimSpace(string(out))
+
+	if result == "" {
+		// Last resort: bare listing of the target directory.
+		var cmd2 *exec.Cmd
+		if os.PathSeparator == '/' {
+			cmd2 = exec.CommandContext(ctx, "ls", "-1", path)
+		} else {
+			cmd2 = exec.CommandContext(ctx, "cmd", "/c", "dir", "/b", path)
+		}
+		out2, _ := cmd2.CombinedOutput()
+		result = strings.TrimSpace(string(out2))
+		if result == "" {
+			return fmt.Sprintf("No files found in %q matching pattern %q", path, pattern)
+		}
+		return fmt.Sprintf("[Fallback: dir listing of %s]\n%s", path, truncate(result, 4000))
+	}
+	return fmt.Sprintf("[Fallback: shell listing]\n%s", truncate(result, 4000))
 }
 
 func toolGrep(input map[string]interface{}) string {
