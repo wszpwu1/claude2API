@@ -531,3 +531,19 @@ func isBinary(data []byte) bool {
 	}
 	return false
 }
+
+// containsFileToolCall reports whether any of the parsed tool calls is a
+// file-access tool (Glob, Grep, Read, Write, Edit, Bash). This is used by the
+// runToolLoop guard to distinguish genuine file-search attempts from prose
+// answers or switch_mode escapes.
+func containsFileToolCall(calls []toolCall) bool {
+	fileTools := map[string]struct{}{
+		"Glob": {}, "Grep": {}, "Read": {}, "Write": {}, "Edit": {}, "Bash": {},
+	}
+	for _, c := range calls {
+		if _, ok := fileTools[c.Name]; ok {
+			return true
+		}
+	}
+	return false
+}

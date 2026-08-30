@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"claude2api/claude"
@@ -590,9 +591,13 @@ func (h *Handler) anthropicToolStream(c *gin.Context, client *claude.Client, req
 // delegated back to the caller (e.g. RooCode) via tool_use blocks so it
 // can run tools in its own workspace rather than the proxy's filesystem.
 //
-// If the model fails to emit any tool calls on the first round and the
-// request's tool_choice requires tool use, one retry is attempted with an
-// explicit nudge so the model does not silently fall back to plain text.
+// The loop enforces three graduated interventions:
+//  1. If the model outputs switch_mode without first calling a file tool on a
+//     file-operation task, the switch_mode directive is stripped.
+//  2. If tool_choice requires tools (or it is a file task) and no calls were
+//     emitted, a standard nudge retry is attempted.
+//  3. If the file task still has no file-tool calls after the nudge retry, a
+//     hardcoded system warning is injected to force file-tool use.
 func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req models.AnthropicRequest, claudeModel, effort, accountID string) ([]models.AnthropicContentBlock, models.AnthropicUsage, error) {
 	toolDefText := buildToolDefsPrompt(req.ToolDefs, req.ToolChoice)
 	emptyTools := json.RawMessage([]byte("[]"))
@@ -603,6 +608,10 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 		thinkingMode, _ = resolveThinking(req.Thinking)
 	}
 
+	// Detect whether this is a file/code operation task so we can apply
+	// stricter tool-use discipline and prevent switch_mode escapes.
+	fileTask := isFileOperationTask(req.Messages)
+
 	prompt := buildToolPrompt(req.System, req.Messages, toolDefText)
 
 	roundThinking, content, err := h.runCompletion(ctx, client, prompt, claudeModel, effort, req.ConversationID, accountID, nil, []json.RawMessage{emptyTools}, thinkingMode)
@@ -612,6 +621,16 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 
 	totalInputChars := len(prompt) + len(content)
 
+	// Guard 1: intercept switch_mode without any file tool call.
+	// If the model tried to escape via switch_mode instead of searching for
+	// the file, strip the directive so it cannot propagate to the client.
+	if fileTask && hasSwitchModePattern(content) {
+		_, firstCalls := extractToolCalls(content)
+		if !containsFileToolCall(firstCalls) {
+			content = stripSwitchModePattern(content)
+		}
+	}
+
 	var allBlocks []models.AnthropicContentBlock
 	if roundThinking != "" {
 		totalInputChars += len(roundThinking)
@@ -620,24 +639,42 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 
 	text, calls := extractToolCalls(content)
 
-	// If the model returned no tool calls but tool use is required, do one
-	// retry with an explicit nudge before giving up and returning plain text.
-	// This handles cases where the model answers in prose instead of calling
-	// a tool, or where it cannot locate a file and needs prompting to use Glob.
-	if len(calls) == 0 && toolChoiceRequiresTools(req.ToolChoice) {
+	// Guard 2: nudge retry.
+	// Trigger when tool_choice requires a tool call, or when this is a file
+	// task and the model returned no calls at all (prose answer or switch_mode).
+	if (len(calls) == 0 && toolChoiceRequiresTools(req.ToolChoice)) ||
+		(fileTask && len(calls) == 0) {
 		nudge := buildToolNudge(content, req.ToolDefs)
 		retryPrompt := prompt + "\n\n[Assistant]\n" + content + "\n\n" + nudge
 		_, retryContent, retryErr := h.runCompletion(ctx, client, retryPrompt, claudeModel, effort, req.ConversationID, accountID, nil, []json.RawMessage{emptyTools}, thinkingMode)
 		if retryErr == nil && retryContent != "" {
 			totalInputChars += len(retryPrompt) + len(retryContent)
-			// Replace the original plain-text response with the retry output.
-			text, calls = extractToolCalls(retryContent)
-			if len(calls) > 0 {
+			retryText, retryCalls := extractToolCalls(retryContent)
+			if len(retryCalls) > 0 {
 				// Retry produced tool calls — discard earlier thinking/text.
 				allBlocks = nil
+				text, calls = retryText, retryCalls
 			} else {
 				// Still no calls: keep retry text so the caller gets something.
 				text = retryContent
+			}
+		}
+	}
+
+	// Guard 3: system-warning retry (file tasks only).
+	// Two consecutive rounds without any file tool calls → inject the
+	// hardcoded correction prompt to force immediate file-tool use.
+	if fileTask && len(calls) == 0 {
+		warningPrompt := prompt + "\n\n[Assistant]\n" + content + "\n\n" + buildFileTaskWarning()
+		_, warnContent, warnErr := h.runCompletion(ctx, client, warningPrompt, claudeModel, effort, req.ConversationID, accountID, nil, []json.RawMessage{emptyTools}, thinkingMode)
+		if warnErr == nil && warnContent != "" {
+			totalInputChars += len(warningPrompt) + len(warnContent)
+			warnText, warnCalls := extractToolCalls(warnContent)
+			if len(warnCalls) > 0 {
+				allBlocks = nil
+				text, calls = warnText, warnCalls
+			} else {
+				text = warnContent
 			}
 		}
 	}
@@ -659,6 +696,65 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 		OutputTokens: totalOutputTokens(allBlocks),
 	}
 	return allBlocks, usage, nil
+}
+
+// switchModeRe matches text patterns where the model attempts to invoke a mode
+// switch instead of using the required file tools.
+var switchModeRe = regexp.MustCompile(`(?i)switch_mode|<switch_mode>|"switch_mode"|switchMode`)
+
+// isFileOperationTask reports whether the most recent user message in the
+// conversation involves file or code operations. Pure chat messages (greetings,
+// explanations, questions without file context) return false, letting them pass
+// through the tool loop without activating the stricter retry discipline.
+func isFileOperationTask(messages []models.AnthropicMessage) bool {
+	fileKeywords := []string{
+		// English
+		"file", "read", "write", "edit", "open", "path", "directory", "folder",
+		"search", "find", "code", "source", "function", "class", "import",
+		"modify", "create", "delete", "move", "rename", "glob", "grep",
+		// Chinese
+		"文件", "代码", "路径", "搜索", "查找", "编辑", "读取", "写入",
+		"修改", "目录", "工程", "项目", "函数", "类", "创建", "删除",
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != "user" {
+			continue
+		}
+		text := strings.ToLower(anthropicContentToString(messages[i].Content))
+		for _, kw := range fileKeywords {
+			if strings.Contains(text, kw) {
+				return true
+			}
+		}
+		break
+	}
+	return false
+}
+
+// hasSwitchModePattern reports whether the model response text contains an
+// attempt to switch modes (switch_mode / switchMode variants).
+func hasSwitchModePattern(text string) bool {
+	return switchModeRe.MatchString(text)
+}
+
+// stripSwitchModePattern removes lines that contain a switch_mode invocation
+// from the model response so the directive is not forwarded to the client.
+func stripSwitchModePattern(text string) string {
+	lines := strings.Split(text, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if !switchModeRe.MatchString(line) {
+			out = append(out, line)
+		}
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+// buildFileTaskWarning returns the hardcoded system-warning turn that is
+// injected as a [Human] message when the model refuses to call file tools
+// after two consecutive rounds on a file-operation task.
+func buildFileTaskWarning() string {
+	return "[Human]\n[System Warning: 严禁在未通过 Glob 或 Grep 找到真实文件路径前直接得出结论或切换模式。你必须立即输出工具调用来搜索目标文件。]"
 }
 
 // toolChoiceRequiresTools reports whether the caller's tool_choice mandates
