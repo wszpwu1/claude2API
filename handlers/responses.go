@@ -19,11 +19,12 @@ func (h *Handler) Responses(c *gin.Context) {
 		return
 	}
 
-	claudeModel, err := resolveModel(req.Model, h.cfg.DefaultModel)
+	claudeModel, err := h.resolveModel(req.Model, h.cfg.DefaultModel)
 	if err != nil {
 		badRequest(c, err.Error())
 		return
 	}
+	c.Set("requestModel", claudeModel)
 
 	lease, err := h.acquireClient(c, req.ConversationID)
 	if err != nil {
@@ -164,6 +165,8 @@ func (h *Handler) responsesToolNonStream(c *gin.Context, client *claude.Client, 
 		upstreamError(c, err.Error())
 		return
 	}
+	c.Set("inputTokens", int64(usage.InputTokens))
+	c.Set("outputTokens", int64(usage.OutputTokens))
 	c.JSON(http.StatusOK, models.ResponsesResponse{
 		ID: genID("resp_"), Object: "response", CreatedAt: time.Now().Unix(), Model: claudeModel,
 		Status: "completed", Output: responseToolOutput(blocks),
@@ -177,6 +180,8 @@ func (h *Handler) responsesToolStream(c *gin.Context, client *claude.Client, req
 		upstreamError(c, err.Error())
 		return
 	}
+	c.Set("inputTokens", int64(usage.InputTokens))
+	c.Set("outputTokens", int64(usage.OutputTokens))
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
@@ -224,6 +229,8 @@ func (h *Handler) responsesNonStream(c *gin.Context, client *claude.Client, prom
 	// Use rune count for accurate token estimation with multi-byte text.
 	inputTokens := len([]rune(prompt)) / 4
 	outputTokens := len([]rune(content)) / 4
+	c.Set("inputTokens", int64(inputTokens))
+	c.Set("outputTokens", int64(outputTokens))
 	resp := models.ResponsesResponse{
 		ID:        respID,
 		Object:    "response",
@@ -286,6 +293,8 @@ func (h *Handler) responsesStream(c *gin.Context, client *claude.Client, prompt,
 			flusher.Flush()
 		}
 	}, nil)
+	c.Set("inputTokens", int64(len([]rune(prompt))/4))
+	c.Set("outputTokens", int64(len([]rune(full.String()))/4))
 
 	writeSSE(c.Writer, models.ResponsesContentPartDone{
 		Type: "response.content_part.done", ItemID: msgID, OutputIndex: 0, ContentIndex: 0,

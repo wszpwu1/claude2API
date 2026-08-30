@@ -8,6 +8,7 @@ type PersistentState struct {
 	MasterKey         MasterKeyConfig `json:"master_key"`
 	Accounts          []Account       `json:"accounts"`
 	APIKeys           []APIKey        `json:"api_keys"`
+	ModelMappings     []ModelMapping  `json:"model_mappings"`
 	Proxy             ProxyConfig     `json:"proxy"`
 	RateLimit         RateLimitConfig `json:"rate_limit"`
 	KeepAlive         KeepAliveConfig `json:"keep_alive"`
@@ -16,26 +17,38 @@ type PersistentState struct {
 	RecentRequests    []RecentRequest `json:"recent_requests"`
 }
 
+// ModelMapping maps an arbitrary incoming model name to a supported Claude model.
+// When a request arrives with From as the model, it is rewritten to To before
+// resolving against the supported-models table.
+type ModelMapping struct {
+	ID        string    `json:"id"`
+	From      string    `json:"from"`
+	To        string    `json:"to"`
+	Enabled   bool      `json:"enabled"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 // Account describes one managed claude.ai account. Secrets are never returned directly by management APIs.
 type Account struct {
-	ID               string    `json:"id"`
-	Name             string    `json:"name"`
-	SessionKey       string    `json:"session_key"`
-	Cookie           string    `json:"cookie,omitempty"`
-	Enabled          bool      `json:"enabled"`
-	Status           string    `json:"status"`
-	StatusMessage    string    `json:"status_message,omitempty"`
-	CooldownUntil    time.Time `json:"cooldown_until,omitempty"`
-	ActiveRequests   int64     `json:"active_requests"`
-	RequestCount     int64     `json:"request_count"`
-	SuccessCount     int64     `json:"success_count"`
-	FailureCount     int64     `json:"failure_count"`
-	SessionUsed      int64     `json:"session_used"`
-	SessionLimit     int64     `json:"session_limit"`
-	SessionUsageRate float64   `json:"session_usage_rate"`
-	LastCheckedAt    time.Time `json:"last_checked_at,omitempty"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	ID               string     `json:"id"`
+	Name             string     `json:"name"`
+	SessionKey       string     `json:"session_key"`
+	Cookie           string     `json:"cookie,omitempty"`
+	Enabled          bool       `json:"enabled"`
+	Status           string     `json:"status"`
+	StatusMessage    string     `json:"status_message,omitempty"`
+	CooldownUntil    *time.Time `json:"cooldown_until,omitempty"`
+	ActiveRequests   int64      `json:"active_requests"`
+	RequestCount     int64      `json:"request_count"`
+	SuccessCount     int64      `json:"success_count"`
+	FailureCount     int64      `json:"failure_count"`
+	SessionUsed      int64      `json:"session_used"`
+	SessionLimit     int64      `json:"session_limit"`
+	SessionUsageRate float64    `json:"session_usage_rate"`
+	LastCheckedAt    time.Time  `json:"last_checked_at,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
 }
 
 // MasterKeyConfig is the optional global credential that grants access to the

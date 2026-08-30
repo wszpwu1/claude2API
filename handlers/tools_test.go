@@ -172,7 +172,7 @@ func TestValidateAnthropicToolPairing(t *testing.T) {
 
 func TestToolDefsPrompt(t *testing.T) {
 	tools := []models.AnthropicTool{{Name: "Bash", InputSchema: map[string]interface{}{"type": "object"}}}
-	p := buildToolDefsPrompt(tools)
+	p := buildToolDefsPrompt(tools, nil)
 	if !strings.Contains(p, "TOOL_CALL") || !strings.Contains(p, "Bash") {
 		t.Fatalf("defs prompt wrong: %q", p)
 	}

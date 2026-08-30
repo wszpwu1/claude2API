@@ -23,11 +23,12 @@ func (h *Handler) ChatCompletion(c *gin.Context) {
 		return
 	}
 
-	claudeModel, err := resolveModel(req.Model, h.cfg.DefaultModel)
+	claudeModel, err := h.resolveModel(req.Model, h.cfg.DefaultModel)
 	if err != nil {
 		badRequest(c, err.Error())
 		return
 	}
+	c.Set("requestModel", claudeModel)
 
 	lease, err := h.acquireClient(c, req.ConversationID)
 	if err != nil {
@@ -108,6 +109,8 @@ func (h *Handler) chatToolNonStream(c *gin.Context, client *claude.Client, req m
 	if len(message.ToolCalls) > 0 {
 		finishReason = "tool_calls"
 	}
+	c.Set("inputTokens", int64(usage.InputTokens))
+	c.Set("outputTokens", int64(usage.OutputTokens))
 	c.JSON(http.StatusOK, models.ChatCompletionResponse{
 		ID: genID("chatcmpl-"), Object: "chat.completion", Created: time.Now().Unix(), Model: claudeModel,
 		Choices: []models.Choice{{Index: 0, Message: message, FinishReason: finishReason}},
@@ -116,7 +119,7 @@ func (h *Handler) chatToolNonStream(c *gin.Context, client *claude.Client, req m
 }
 
 func (h *Handler) chatToolStream(c *gin.Context, client *claude.Client, req models.AnthropicRequest, claudeModel, effort, accountID string) {
-	blocks, _, err := h.runToolLoop(c.Request.Context(), client, req, claudeModel, effort, accountID)
+	blocks, usage, err := h.runToolLoop(c.Request.Context(), client, req, claudeModel, effort, accountID)
 	if err != nil {
 		upstreamError(c, err.Error())
 		return
@@ -138,6 +141,8 @@ func (h *Handler) chatToolStream(c *gin.Context, client *claude.Client, req mode
 			toolIndex++
 		}
 	}
+	c.Set("inputTokens", int64(usage.InputTokens))
+	c.Set("outputTokens", int64(usage.OutputTokens))
 	stop := "stop"
 	if toolIndex > 0 {
 		stop = "tool_calls"
@@ -158,6 +163,8 @@ func (h *Handler) chatCompletionNonStream(c *gin.Context, client *claude.Client,
 	// Use rune count for accurate token estimation with multi-byte text.
 	promptTokens := len([]rune(prompt)) / 4
 	completionTokens := len([]rune(content)) / 4
+	c.Set("inputTokens", int64(promptTokens))
+	c.Set("outputTokens", int64(completionTokens))
 	resp := models.ChatCompletionResponse{
 		ID:      genID("chatcmpl-"),
 		Object:  "chat.completion",
@@ -207,6 +214,8 @@ func (h *Handler) chatCompletionStream(c *gin.Context, client *claude.Client, pr
 			flusher.Flush()
 		}
 	}, nil)
+	c.Set("inputTokens", int64(len([]rune(prompt))/4))
+	c.Set("outputTokens", int64(len([]rune(full.String()))/4))
 	finishReason := "stop"
 	if err != nil {
 		// Emit the error as an inline delta so clients see it, then close with

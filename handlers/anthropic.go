@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
@@ -54,11 +53,12 @@ func (h *Handler) AnthropicMessages(c *gin.Context) {
 		req.MaxTokens = 4096
 	}
 
-	claudeModel, err := resolveModel(req.Model, h.cfg.DefaultModel)
+	claudeModel, err := h.resolveModel(req.Model, h.cfg.DefaultModel)
 	if err != nil {
 		badRequest(c, err.Error())
 		return
 	}
+	c.Set("requestModel", claudeModel)
 
 	lease, err := h.acquireClient(c, req.ConversationID)
 	if err != nil {
@@ -332,6 +332,8 @@ func (h *Handler) anthropicNonStream(c *gin.Context, client *claude.Client, prom
 		upstreamError(c, err.Error())
 		return
 	}
+	c.Set("inputTokens", int64(len([]rune(prompt))/4))
+	c.Set("outputTokens", int64(len([]rune(content))/4))
 	resp := models.AnthropicResponse{
 		ID:         genID("msg_"),
 		Type:       "message",
@@ -424,6 +426,8 @@ func (h *Handler) anthropicStream(c *gin.Context, client *claude.Client, prompt,
 			flusher.Flush()
 		}
 	}, nil)
+	c.Set("inputTokens", int64(len([]rune(prompt))/4))
+	c.Set("outputTokens", int64(outputChars/4))
 
 	// content_block_stop
 	writeSSE(c.Writer, models.AnthropicStreamContentBlockStop{Type: "content_block_stop", Index: 0})
@@ -456,6 +460,8 @@ func (h *Handler) anthropicToolNonStream(c *gin.Context, client *claude.Client, 
 		return
 	}
 	usage = cacheUsage(accountID, req.ConversationID, req, usage)
+	c.Set("inputTokens", int64(usage.InputTokens))
+	c.Set("outputTokens", int64(usage.OutputTokens))
 	stopReason := "end_turn"
 	if containsToolUse(blocks) {
 		stopReason = "tool_use"
@@ -472,8 +478,11 @@ func (h *Handler) anthropicToolNonStream(c *gin.Context, client *claude.Client, 
 	c.JSON(http.StatusOK, resp)
 }
 
-// anthropicToolStream runs a tool-use loop, then streams the final text back
-// chunk-by-chunk so Claude Code sees a streaming response.
+// anthropicToolStream runs a tool-use loop, then streams the result back
+// as a well-formed Anthropic SSE response. Because runToolLoop already has
+// the complete output in memory, each block is emitted as a single delta
+// rather than being chopped into small artificial chunks — this eliminates
+// hundreds of redundant write/flush calls and reduces response latency.
 func (h *Handler) anthropicToolStream(c *gin.Context, client *claude.Client, req models.AnthropicRequest, claudeModel, effort, accountID string) {
 	blocks, usage, err := h.runToolLoop(c.Request.Context(), client, req, claudeModel, effort, accountID)
 	if err != nil {
@@ -481,6 +490,8 @@ func (h *Handler) anthropicToolStream(c *gin.Context, client *claude.Client, req
 		return
 	}
 	usage = cacheUsage(accountID, req.ConversationID, req, usage)
+	c.Set("inputTokens", int64(usage.InputTokens))
+	c.Set("outputTokens", int64(usage.OutputTokens))
 
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.Header().Set("Cache-Control", "no-cache")
@@ -503,8 +514,9 @@ func (h *Handler) anthropicToolStream(c *gin.Context, client *claude.Client, req
 		},
 	})
 
-	// Emit each content block. tool_use and tool_result blocks are sent
-	// verbatim; text/thinking blocks are streamed chunk-by-chunk.
+	// Emit each content block as a single SSE sequence.
+	// tool_use/tool_result carry structured data; text/thinking carry plain text.
+	// All data is already in memory so there is no benefit in sub-chunking.
 	for i, block := range blocks {
 		switch block.Type {
 		case "tool_use":
@@ -534,13 +546,18 @@ func (h *Handler) anthropicToolStream(c *gin.Context, client *claude.Client, req
 			}
 			writeSSE(c.Writer, models.AnthropicStreamContentBlockStop{Type: "content_block_stop", Index: i})
 		default:
+			// text / thinking blocks: send the full text in a single delta.
 			writeSSE(c.Writer, models.AnthropicStreamContentBlockStart{
 				Type:         "content_block_start",
 				Index:        i,
 				ContentBlock: models.AnthropicContentBlock{Type: block.Type, Text: ""},
 			})
 			if block.Text != "" {
-				streamText(c.Writer, block.Text, i, flusher)
+				writeSSE(c.Writer, models.AnthropicStreamContentBlockDelta{
+					Type:  "content_block_delta",
+					Index: i,
+					Delta: models.AnthropicStreamDelta{Type: "text_delta", Text: block.Text},
+				})
 			}
 			writeSSE(c.Writer, models.AnthropicStreamContentBlockStop{Type: "content_block_stop", Index: i})
 		}
@@ -564,43 +581,13 @@ func (h *Handler) anthropicToolStream(c *gin.Context, client *claude.Client, req
 	}
 }
 
-// streamText sends text in small chunks with a slight delay to mimic streaming.
-func streamText(w io.Writer, text string, index int, flusher http.Flusher) {
-	chunks := chunkString(text, 12)
-	for _, chunk := range chunks {
-		writeSSE(w, models.AnthropicStreamContentBlockDelta{
-			Type:  "content_block_delta",
-			Index: index,
-			Delta: models.AnthropicStreamDelta{Type: "text_delta", Text: chunk},
-		})
-		if flusher != nil {
-			flusher.Flush()
-		}
-	}
-}
-
-// chunkString splits s into pieces of at most n chars, without breaking runes.
-func chunkString(s string, n int) []string {
-	if s == "" {
-		return nil
-	}
-	runes := []rune(s)
-	var chunks []string
-	for i := 0; i < len(runes); i += n {
-		end := i + n
-		if end > len(runes) {
-			end = len(runes)
-		}
-		chunks = append(chunks, string(runes[i:end]))
-	}
-	return chunks
-}
-
-// runToolLoop drives the multi-round conversation with claude.ai, injecting tool
-// definitions into the prompt and executing any tool calls the model embeds in
-// its text response.
+// runToolLoop sends a single tool-enabled prompt to claude.ai, parses any
+// [TOOL_CALL] blocks the model emits, and returns the assembled content
+// blocks together with usage estimates. Tool execution is intentionally
+// delegated back to the caller (e.g. RooCode) via tool_use blocks so it
+// can run tools in its own workspace rather than the proxy's filesystem.
 func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req models.AnthropicRequest, claudeModel, effort, accountID string) ([]models.AnthropicContentBlock, models.AnthropicUsage, error) {
-	toolDefText := buildToolDefsPrompt(req.ToolDefs)
+	toolDefText := buildToolDefsPrompt(req.ToolDefs, req.ToolChoice)
 	emptyTools := json.RawMessage([]byte("[]"))
 
 	// Per-request thinking overrides proxy config.
@@ -609,75 +596,39 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 		thinkingMode, _ = resolveThinking(req.Thinking)
 	}
 
-	// We keep an internal transcript of the conversation so we can keep feeding
-	// claude.ai a single prompt each round.
-	messages := cloneMessages(req.Messages)
-	system := req.System
+	prompt := buildToolPrompt(req.System, req.Messages, toolDefText)
 
-	// Collect all content blocks across rounds so the caller can stream them.
-	var allBlocks []models.AnthropicContentBlock
-	totalInputChars := 0
-
-	for round := 0; round < MaxToolRounds; round++ {
-		prompt := buildToolPrompt(system, messages, toolDefText)
-		totalInputChars += len(prompt)
-
-		roundThinking, content, err := h.runCompletion(ctx, client, prompt, claudeModel, effort, req.ConversationID, accountID, nil, []json.RawMessage{emptyTools}, thinkingMode)
-		if err != nil {
-			return allBlocks, models.AnthropicUsage{}, err
-		}
-
-		totalInputChars += len(content)
-		if roundThinking != "" {
-			totalInputChars += len(roundThinking)
-			allBlocks = append(allBlocks, models.AnthropicContentBlock{
-				Type: "thinking",
-				Text: roundThinking,
-			})
-		}
-
-		text, calls := extractToolCalls(content)
-
-		// Remember the assistant turn (text + embedded tool calls) for transcript.
-		assistantBlocks := []models.AnthropicContentBlock{}
-		if text != "" {
-			allBlocks = append(allBlocks, models.AnthropicContentBlock{Type: "text", Text: text})
-			assistantBlocks = append(assistantBlocks, models.AnthropicContentBlock{Type: "text", Text: text})
-		}
-
-		if len(calls) == 0 {
-			// No tool calls — conversation is done.
-			usage := models.AnthropicUsage{
-				InputTokens:  totalInputChars / 4,
-				OutputTokens: totalOutputChars(allBlocks),
-			}
-			return allBlocks, usage, nil
-		}
-
-		// Return tool_use blocks to the Anthropic-compatible client. RooCode must
-		// execute these tools in its own workspace and send the resulting
-		// tool_result blocks in the next /v1/messages request. Executing them here
-		// would run against the proxy server's filesystem and prevents RooCode from
-		// receiving the tool request it is waiting for.
-		for _, call := range calls {
-			allBlocks = append(allBlocks, models.AnthropicContentBlock{
-				Type:  "tool_use",
-				ID:    call.ID,
-				Name:  call.Name,
-				Input: call.Input,
-			})
-		}
-		usage := models.AnthropicUsage{
-			InputTokens:  totalInputChars / 4,
-			OutputTokens: totalOutputChars(allBlocks),
-		}
-		return allBlocks, usage, nil
+	roundThinking, content, err := h.runCompletion(ctx, client, prompt, claudeModel, effort, req.ConversationID, accountID, nil, []json.RawMessage{emptyTools}, thinkingMode)
+	if err != nil {
+		return nil, models.AnthropicUsage{}, err
 	}
 
-	// Hit the round cap — return whatever we have.
+	// totalInputChars counts the prompt plus what the model returned so the
+	// token estimate reflects the full in/out text volume for this round.
+	totalInputChars := len(prompt) + len(content)
+
+	var allBlocks []models.AnthropicContentBlock
+	if roundThinking != "" {
+		totalInputChars += len(roundThinking)
+		allBlocks = append(allBlocks, models.AnthropicContentBlock{Type: "thinking", Text: roundThinking})
+	}
+
+	text, calls := extractToolCalls(content)
+	if text != "" {
+		allBlocks = append(allBlocks, models.AnthropicContentBlock{Type: "text", Text: text})
+	}
+	for _, call := range calls {
+		allBlocks = append(allBlocks, models.AnthropicContentBlock{
+			Type:  "tool_use",
+			ID:    call.ID,
+			Name:  call.Name,
+			Input: call.Input,
+		})
+	}
+
 	usage := models.AnthropicUsage{
 		InputTokens:  totalInputChars / 4,
-		OutputTokens: totalOutputChars(allBlocks),
+		OutputTokens: totalOutputTokens(allBlocks),
 	}
 	return allBlocks, usage, nil
 }
@@ -691,8 +642,8 @@ func containsToolUse(blocks []models.AnthropicContentBlock) bool {
 	return false
 }
 
-// totalOutputChars estimates total output tokens from content blocks.
-func totalOutputChars(blocks []models.AnthropicContentBlock) int {
+// totalOutputTokens estimates total output tokens from content blocks.
+func totalOutputTokens(blocks []models.AnthropicContentBlock) int {
 	total := 0
 	for _, b := range blocks {
 		switch b.Type {
@@ -711,21 +662,10 @@ func totalOutputChars(blocks []models.AnthropicContentBlock) int {
 	return total / 4
 }
 
-// buildContentBlocks assembles the final content block list, prepending a
-// thinking block when the model produced thinking text.
-func buildContentBlocks(thinking string, rest []models.AnthropicContentBlock) []models.AnthropicContentBlock {
-	if thinking == "" {
-		return rest
-	}
-	block := models.AnthropicContentBlock{
-		Type: "thinking",
-		Text: thinking,
-	}
-	return append([]models.AnthropicContentBlock{block}, rest...)
-}
-
 // buildToolDefsPrompt renders the tool definitions into a prompt appendix.
-func buildToolDefsPrompt(tools []models.AnthropicTool) string {
+// toolChoice follows the Anthropic format: nil / {"type":"auto"} / {"type":"none"} /
+// {"type":"any"} / {"type":"tool","name":"<name>"}.
+func buildToolDefsPrompt(tools []models.AnthropicTool, toolChoice interface{}) string {
 	if len(tools) == 0 {
 		return ""
 	}
@@ -737,8 +677,34 @@ func buildToolDefsPrompt(tools []models.AnthropicTool) string {
 	sb.WriteString("- 'id' must be unique per call, e.g. \"toolu_1\", \"toolu_2\".\n")
 	sb.WriteString("- 'input' must match the tool's input_schema.\n")
 	sb.WriteString("- You may include explanatory text before or after the block.\n")
-	sb.WriteString("- If no tool is needed, just respond normally.\n\n")
-	sb.WriteString("Available tools (JSON):\n")
+
+	// Inject tool_choice constraint so the model honours the caller's selection policy.
+	choiceType := ""
+	choiceName := ""
+	if m, ok := toolChoice.(map[string]interface{}); ok {
+		choiceType, _ = m["type"].(string)
+		choiceName, _ = m["name"].(string)
+	}
+	switch choiceType {
+	case "none":
+		// Model must NOT call any tool — respond as plain text.
+		sb.WriteString("- IMPORTANT: Do NOT use any tool in this response. Respond using plain text only.\n")
+	case "any":
+		// Model MUST call at least one tool.
+		sb.WriteString("- IMPORTANT: You MUST use at least one tool in your response. Do not reply with plain text only.\n")
+	case "tool":
+		// Model MUST call the specific named tool.
+		if choiceName != "" {
+			sb.WriteString(fmt.Sprintf("- IMPORTANT: You MUST use the tool named %q in your response. Do not call any other tool or reply with plain text only.\n", choiceName))
+		} else {
+			sb.WriteString("- IMPORTANT: You MUST use at least one tool in your response.\n")
+		}
+	default:
+		// "auto" or unset: model decides.
+		sb.WriteString("- If no tool is needed, just respond normally.\n")
+	}
+
+	sb.WriteString("\nAvailable tools (JSON):\n")
 	b, _ := json.MarshalIndent(tools, "", "  ")
 	sb.Write(b)
 	sb.WriteString("\n[/Tools]")
@@ -843,20 +809,6 @@ func appendToolResultContent(sb *strings.Builder, content interface{}) {
 			}
 		}
 	}
-}
-
-func cloneMessages(in []models.AnthropicMessage) []models.AnthropicMessage {
-	out := make([]models.AnthropicMessage, len(in))
-	copy(out, in)
-	return out
-}
-
-func blocksToInterface(blocks []models.AnthropicContentBlock) []interface{} {
-	out := make([]interface{}, 0, len(blocks))
-	for _, b := range blocks {
-		out = append(out, b)
-	}
-	return out
 }
 
 func mustJSON(v interface{}) string {

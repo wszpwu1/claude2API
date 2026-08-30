@@ -116,6 +116,26 @@ func main() {
 			SessionUsed:    stats.SessionUsed,
 		}, true
 	})
+	adminAPI.SetModelMappingsChangedHandler(func(mappings []admin.ModelMapping) error {
+		m := make(map[string]string, len(mappings))
+		for _, mapping := range mappings {
+			if mapping.Enabled {
+				m[mapping.From] = mapping.To
+			}
+		}
+		h.SetModelMappings(m)
+		return nil
+	})
+	// Load persisted model mappings into the runtime handler on startup.
+	{
+		m := make(map[string]string)
+		for _, mapping := range managedState.ModelMappings {
+			if mapping.Enabled {
+				m[mapping.From] = mapping.To
+			}
+		}
+		h.SetModelMappings(m)
+	}
 
 	// OpenAI-compatible endpoints
 	v1 := r.Group("/v1")

@@ -77,7 +77,7 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 // SetBrowserHeaders applies the common browser-like headers captured from
 // claude.ai web requests.
 func (c *Client) SetBrowserHeaders(req *http.Request) {
-	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Accept", "*/*")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 	req.Header.Set("Accept-Encoding", "gzip, deflate, br")
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36")

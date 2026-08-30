@@ -24,17 +24,18 @@ type AccountRuntimeStats struct {
 
 // API exposes administrator authentication and management endpoints.
 type API struct {
-	store              *Store
-	auth               *AuthManager
-	metrics            *Metrics
-	onAccountsChanged  func([]Account) error
-	onSettingsChanged  func(PanelSettings) error
-	onRateLimitChanged func(RateLimitConfig) error
-	onKeepAliveChanged func(KeepAliveConfig) error
-	onAccountCheck     func(context.Context, string) error
-	onAccountRestore   func(string) bool
-	onAccountCooldowns func() map[string]time.Time
-	onAccountStats     func(accountID string) (AccountRuntimeStats, bool)
+	store                  *Store
+	auth                   *AuthManager
+	metrics                *Metrics
+	onAccountsChanged      func([]Account) error
+	onSettingsChanged      func(PanelSettings) error
+	onRateLimitChanged     func(RateLimitConfig) error
+	onKeepAliveChanged     func(KeepAliveConfig) error
+	onAccountCheck         func(context.Context, string) error
+	onAccountRestore       func(string) bool
+	onAccountCooldowns     func() map[string]time.Time
+	onAccountStats         func(accountID string) (AccountRuntimeStats, bool)
+	onModelMappingsChanged func([]ModelMapping) error
 }
 
 // NewAPI creates the management API.
@@ -94,6 +95,19 @@ func (a *API) SetAccountStatsHandler(handler func(string) (AccountRuntimeStats, 
 	a.onAccountStats = handler
 }
 
+// SetModelMappingsChangedHandler registers a callback that applies model mapping
+// changes to the runtime handler immediately without restarting the service.
+func (a *API) SetModelMappingsChangedHandler(handler func([]ModelMapping) error) {
+	a.onModelMappingsChanged = handler
+}
+
+func (a *API) notifyModelMappingsChanged() error {
+	if a.onModelMappingsChanged == nil {
+		return nil
+	}
+	return a.onModelMappingsChanged(a.store.Snapshot().ModelMappings)
+}
+
 // RegisterRoutes mounts public authentication and protected management routes.
 func (a *API) RegisterRoutes(router *gin.Engine) {
 	admin := router.Group("/admin/api")
@@ -132,6 +146,10 @@ func (a *API) RegisterRoutes(router *gin.Engine) {
 	protected.POST("/api-keys", a.createAPIKey)
 	protected.PUT("/api-keys/:id", a.updateAPIKey)
 	protected.DELETE("/api-keys/:id", a.deleteAPIKey)
+	protected.GET("/model-mappings", a.listModelMappings)
+	protected.POST("/model-mappings", a.createModelMapping)
+	protected.PUT("/model-mappings/:id", a.updateModelMapping)
+	protected.DELETE("/model-mappings/:id", a.deleteModelMapping)
 }
 
 type loginRequest struct {
@@ -190,12 +208,17 @@ func (a *API) state(c *gin.Context) {
 	state.MasterKey.KeyHash = ""
 	cooldowns := a.accountCooldownSnapshot()
 	for index := range state.Accounts {
-		state.Accounts[index].CooldownUntil = cooldowns[state.Accounts[index].ID]
+		if t, ok := cooldowns[state.Accounts[index].ID]; ok {
+			state.Accounts[index].CooldownUntil = &t
+		}
 		a.mergeRuntimeStats(&state.Accounts[index])
 		prepareAccountForResponse(&state.Accounts[index])
 	}
 	for index := range state.APIKeys {
 		state.APIKeys[index].KeyHash = ""
+	}
+	if state.ModelMappings == nil {
+		state.ModelMappings = []ModelMapping{}
 	}
 	c.JSON(http.StatusOK, state)
 }
@@ -245,7 +268,9 @@ func (a *API) listAccounts(c *gin.Context) {
 	accounts := a.store.Snapshot().Accounts
 	cooldowns := a.accountCooldownSnapshot()
 	for index := range accounts {
-		accounts[index].CooldownUntil = cooldowns[accounts[index].ID]
+		if t, ok := cooldowns[accounts[index].ID]; ok {
+			accounts[index].CooldownUntil = &t
+		}
 		a.mergeRuntimeStats(&accounts[index])
 		prepareAccountForResponse(&accounts[index])
 	}
@@ -283,35 +308,42 @@ func (a *API) checkAccounts(c *gin.Context) {
 		return
 	}
 	accounts := a.store.Snapshot().Accounts
+
+	// Run all health checks first, then persist results in one atomic write.
+	type checkResult struct {
+		status  string
+		message string
+	}
+	results := make(map[string]checkResult, len(accounts))
 	checked, healthy := 0, 0
 	for _, account := range accounts {
 		if !account.Enabled {
 			continue
 		}
 		checked++
-		err := a.onAccountCheck(c.Request.Context(), account.ID)
-		status, message := "healthy", ""
-		if err != nil {
-			status, message = "unhealthy", err.Error()
+		if err := a.onAccountCheck(c.Request.Context(), account.ID); err != nil {
+			results[account.ID] = checkResult{status: "unhealthy", message: err.Error()}
 		} else {
 			healthy++
+			results[account.ID] = checkResult{status: "healthy"}
 		}
-		now := time.Now().UTC()
-		if err := a.store.Update(func(state *PersistentState) error {
-			for index := range state.Accounts {
-				if state.Accounts[index].ID == account.ID {
-					state.Accounts[index].Status = status
-					state.Accounts[index].StatusMessage = message
-					state.Accounts[index].LastCheckedAt = now
-					state.Accounts[index].UpdatedAt = now
-					break
-				}
+	}
+	now := time.Now().UTC()
+	if err := a.store.Update(func(state *PersistentState) error {
+		for index := range state.Accounts {
+			r, ok := results[state.Accounts[index].ID]
+			if !ok {
+				continue
 			}
-			return nil
-		}); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": err.Error(), "type": "storage_error"}})
-			return
+			state.Accounts[index].Status = r.status
+			state.Accounts[index].StatusMessage = r.message
+			state.Accounts[index].LastCheckedAt = now
+			state.Accounts[index].UpdatedAt = now
 		}
+		return nil
+	}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": err.Error(), "type": "storage_error"}})
+		return
 	}
 	c.JSON(http.StatusOK, gin.H{"checked": checked, "healthy": healthy, "unhealthy": checked - healthy})
 }
@@ -379,9 +411,22 @@ func (a *API) deleteBlockedAccounts(c *gin.Context) {
 
 func (a *API) restoreAccount(c *gin.Context) {
 	id := strings.TrimSpace(c.Param("id"))
-	if a.onAccountRestore == nil || !a.onAccountRestore(id) {
+	// Verify the account exists in persistent state before touching the runtime.
+	found := false
+	for _, acc := range a.store.Snapshot().Accounts {
+		if acc.ID == id {
+			found = true
+			break
+		}
+	}
+	if !found {
 		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"message": "account not found", "type": "not_found"}})
 		return
+	}
+	// Best-effort: clear the runtime cooldown if one is active. The store status
+	// is updated unconditionally so the UI always reflects the operator's intent.
+	if a.onAccountRestore != nil {
+		a.onAccountRestore(id)
 	}
 	if err := a.store.Update(func(state *PersistentState) error {
 		for index := range state.Accounts {
@@ -512,9 +557,11 @@ func (a *API) importAccounts(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": err.Error(), "type": "storage_error"}})
 		return
 	}
-	if err := a.notifyAccountsChanged(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": err.Error(), "type": "runtime_refresh_error"}})
-		return
+	if imported > 0 {
+		if err := a.notifyAccountsChanged(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": err.Error(), "type": "runtime_refresh_error"}})
+			return
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"imported": imported, "skipped": skipped})
 }
@@ -582,7 +629,11 @@ func (a *API) updateAccount(c *gin.Context) {
 		return nil
 	})
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": err.Error(), "type": "account_error"}})
+		status := http.StatusBadRequest
+		if errors.Is(err, errAccountExists) {
+			status = http.StatusConflict
+		}
+		c.JSON(status, gin.H{"error": gin.H{"message": err.Error(), "type": "account_error"}})
 		return
 	}
 	if !found {
@@ -680,6 +731,12 @@ func accountFromImportLine(line string) Account {
 	return account
 }
 
+func isValidProxyURL(u string) bool {
+	return strings.HasPrefix(u, "http://") ||
+		strings.HasPrefix(u, "https://") ||
+		strings.HasPrefix(u, "socks5://")
+}
+
 func sessionKeyFromCookie(cookie string) string {
 	for _, part := range strings.Split(cookie, ";") {
 		keyValue := strings.SplitN(strings.TrimSpace(part), "=", 2)
@@ -741,6 +798,10 @@ func (a *API) updateProxy(c *gin.Context) {
 	request.URLTemplate = strings.TrimSpace(request.URLTemplate)
 	if request.Enabled && request.URLTemplate == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": "url_template is required when proxy is enabled", "type": "invalid_request_error"}})
+		return
+	}
+	if request.URLTemplate != "" && !isValidProxyURL(request.URLTemplate) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": "url_template must start with http://, https://, or socks5://", "type": "invalid_request_error"}})
 		return
 	}
 	if err := a.store.Update(func(state *PersistentState) error {
@@ -1007,6 +1068,168 @@ func (a *API) deleteAPIKey(c *gin.Context) {
 	}
 	if !deleted {
 		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"message": "API key not found", "type": "not_found"}})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// -------- Model Mappings --------
+
+type createModelMappingRequest struct {
+	From    string `json:"from" binding:"required"`
+	To      string `json:"to" binding:"required"`
+	Enabled *bool  `json:"enabled"`
+}
+
+type updateModelMappingRequest struct {
+	From    *string `json:"from"`
+	To      *string `json:"to"`
+	Enabled *bool   `json:"enabled"`
+}
+
+func (a *API) listModelMappings(c *gin.Context) {
+	mappings := a.store.Snapshot().ModelMappings
+	if mappings == nil {
+		mappings = []ModelMapping{}
+	}
+	c.JSON(http.StatusOK, gin.H{"model_mappings": mappings})
+}
+
+func (a *API) createModelMapping(c *gin.Context) {
+	var request createModelMappingRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": "from and to are required", "type": "invalid_request_error"}})
+		return
+	}
+	request.From = strings.TrimSpace(request.From)
+	request.To = strings.TrimSpace(request.To)
+	if request.From == "" || request.To == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": "from and to must not be empty", "type": "invalid_request_error"}})
+		return
+	}
+
+	enabled := true
+	if request.Enabled != nil {
+		enabled = *request.Enabled
+	}
+	now := time.Now().UTC()
+	mapping := ModelMapping{
+		ID:        utils.GenerateUUID(),
+		From:      request.From,
+		To:        request.To,
+		Enabled:   enabled,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	if err := a.store.Update(func(state *PersistentState) error {
+		for _, existing := range state.ModelMappings {
+			if strings.EqualFold(existing.From, mapping.From) {
+				return errors.New("a mapping for model '" + mapping.From + "' already exists")
+			}
+		}
+		state.ModelMappings = append(state.ModelMappings, mapping)
+		return nil
+	}); err != nil {
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "already exists") {
+			status = http.StatusConflict
+		}
+		c.JSON(status, gin.H{"error": gin.H{"message": err.Error(), "type": "mapping_error"}})
+		return
+	}
+	if err := a.notifyModelMappingsChanged(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": err.Error(), "type": "runtime_refresh_error"}})
+		return
+	}
+	c.JSON(http.StatusCreated, mapping)
+}
+
+func (a *API) updateModelMapping(c *gin.Context) {
+	id := strings.TrimSpace(c.Param("id"))
+	var request updateModelMappingRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": "invalid model mapping payload", "type": "invalid_request_error"}})
+		return
+	}
+
+	var updated ModelMapping
+	found := false
+	if err := a.store.Update(func(state *PersistentState) error {
+		for index := range state.ModelMappings {
+			if state.ModelMappings[index].ID != id {
+				continue
+			}
+			if request.From != nil {
+				from := strings.TrimSpace(*request.From)
+				if from == "" {
+					return errors.New("from must not be empty")
+				}
+				// Check for duplicate from value among other mappings.
+				for otherIndex, m := range state.ModelMappings {
+					if otherIndex != index && strings.EqualFold(m.From, from) {
+						return errors.New("a mapping for model '" + from + "' already exists")
+					}
+				}
+				state.ModelMappings[index].From = from
+			}
+			if request.To != nil {
+				to := strings.TrimSpace(*request.To)
+				if to == "" {
+					return errors.New("to must not be empty")
+				}
+				state.ModelMappings[index].To = to
+			}
+			if request.Enabled != nil {
+				state.ModelMappings[index].Enabled = *request.Enabled
+			}
+			state.ModelMappings[index].UpdatedAt = time.Now().UTC()
+			updated = state.ModelMappings[index]
+			found = true
+			break
+		}
+		return nil
+	}); err != nil {
+		status := http.StatusBadRequest
+		if strings.Contains(err.Error(), "already exists") {
+			status = http.StatusConflict
+		}
+		c.JSON(status, gin.H{"error": gin.H{"message": err.Error(), "type": "mapping_error"}})
+		return
+	}
+	if !found {
+		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"message": "model mapping not found", "type": "not_found"}})
+		return
+	}
+	if err := a.notifyModelMappingsChanged(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": err.Error(), "type": "runtime_refresh_error"}})
+		return
+	}
+	c.JSON(http.StatusOK, updated)
+}
+
+func (a *API) deleteModelMapping(c *gin.Context) {
+	id := strings.TrimSpace(c.Param("id"))
+	deleted := false
+	if err := a.store.Update(func(state *PersistentState) error {
+		for index, m := range state.ModelMappings {
+			if m.ID == id {
+				state.ModelMappings = append(state.ModelMappings[:index], state.ModelMappings[index+1:]...)
+				deleted = true
+				break
+			}
+		}
+		return nil
+	}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": err.Error(), "type": "storage_error"}})
+		return
+	}
+	if !deleted {
+		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"message": "model mapping not found", "type": "not_found"}})
+		return
+	}
+	if err := a.notifyModelMappingsChanged(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": err.Error(), "type": "runtime_refresh_error"}})
 		return
 	}
 	c.Status(http.StatusNoContent)

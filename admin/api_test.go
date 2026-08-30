@@ -204,7 +204,7 @@ func TestAccountListIncludesRuntimeCooldownDeadline(t *testing.T) {
 	if len(result.Accounts) != 1 {
 		t.Fatalf("account count = %d, want 1", len(result.Accounts))
 	}
-	if !result.Accounts[0].CooldownUntil.Equal(deadline) {
+	if result.Accounts[0].CooldownUntil == nil || !result.Accounts[0].CooldownUntil.Equal(deadline) {
 		t.Fatalf("cooldown deadline = %v, want %v", result.Accounts[0].CooldownUntil, deadline)
 	}
 	if result.Accounts[0].SessionKey != "" || result.Accounts[0].Cookie != "" {

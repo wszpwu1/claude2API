@@ -1,114 +1,765 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Claude2API 管理控制台</title>
   <style>
-    :root{font-family:Inter,"Microsoft YaHei",sans-serif;color:#172033;background:#f3f6fb}*{box-sizing:border-box}body{margin:0;min-height:100vh}button,input,textarea{font:inherit}.hidden{display:none!important}.login{min-height:100vh;display:grid;place-items:center;padding:24px;background:linear-gradient(135deg,#111827,#334155)}.card{width:min(420px,100%);padding:32px;border-radius:18px;background:#fff;box-shadow:0 24px 60px #0004}.field{display:grid;gap:8px;margin:14px 0}.field input,.field textarea{padding:11px 13px;border:1px solid #cbd5e1;border-radius:9px}.primary,.secondary,.danger{padding:10px 14px;border:0;border-radius:9px;cursor:pointer}.primary{color:#fff;background:#2563eb}.secondary{color:#1e293b;background:#e2e8f0}.danger{color:#fff;background:#dc2626}.wide{width:100%}.error{min-height:20px;color:#dc2626}.shell{min-height:100vh}.topbar{display:flex;align-items:center;justify-content:space-between;padding:18px 28px;color:#fff;background:#111827}.topbar h1{margin:0;font-size:20px}.logout{padding:8px 14px;border:1px solid #ffffff55;border-radius:8px;color:#fff;background:transparent;cursor:pointer}.content{width:min(1240px,calc(100% - 32px));margin:24px auto}.tabs{display:flex;gap:8px;flex-wrap:wrap}.tab{padding:10px 16px;border:0;border-radius:9px;background:#e2e8f0;cursor:pointer}.tab.active{color:#fff;background:#2563eb}.metrics{display:grid;grid-template-columns:repeat(6,1fr);gap:14px;margin-top:18px}.metric,.panel{padding:20px;border-radius:14px;background:#fff;box-shadow:0 8px 24px #0f172a10}.metric span{display:block;color:#64748b}.metric strong{display:block;margin-top:8px;font-size:25px}.panel{margin-top:18px}.panel h2{margin:0}.panel-head,.actions{display:flex;align-items:center;justify-content:space-between;gap:10px}.actions{justify-content:flex-start;flex-wrap:wrap}.form-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:0 16px;margin-top:14px}.form-grid .full{grid-column:1/-1}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{padding:11px;text-align:left;border-bottom:1px solid #e2e8f0}th{color:#64748b;font-weight:600}.status{padding:4px 9px;border-radius:999px;font-size:12px;background:#dcfce7;color:#166534}.empty{text-align:center;color:#94a3b8}.notice{margin:14px 0;padding:12px;border-radius:9px;background:#eff6ff;color:#1d4ed8;word-break:break-all}.chart{display:flex;align-items:flex-end;gap:8px;height:180px;margin-top:16px}.bar{flex:1;min-width:28px;background:#60a5fa;border-radius:7px 7px 0 0;position:relative}.bar span{position:absolute;bottom:-25px;width:100%;text-align:center;font-size:11px;color:#64748b}@media(max-width:900px){.metrics{grid-template-columns:repeat(2,1fr)}.form-grid{grid-template-columns:1fr}.form-grid .full{grid-column:auto}.content{overflow-x:auto}.topbar{padding:16px}}
-    :root{color-scheme:light;--text:#172033;--muted:#64748b;--page:#f3f6fb;--surface:#fff;--input:#fff;--border:#cbd5e1;--topbar:#111827;--secondary:#e2e8f0;--secondary-text:#1e293b;--shadow:#0f172a10}:root[data-theme="dark"]{color-scheme:dark;--text:#e5e7eb;--muted:#94a3b8;--page:#0f172a;--surface:#1e293b;--input:#0f172a;--border:#475569;--topbar:#020617;--secondary:#334155;--secondary-text:#f1f5f9;--shadow:#0006}body{color:var(--text);background:var(--page)}input,textarea{color:var(--text);background:var(--input)}.card,.metric,.panel{color:var(--text);background:var(--surface);box-shadow:0 8px 24px var(--shadow)}.field input,.field textarea{border-color:var(--border)}.topbar{background:var(--topbar)}.secondary,.tab{color:var(--secondary-text);background:var(--secondary)}.metric span,.empty{color:var(--muted)}.toolbar{display:flex;align-items:center;gap:8px}.toolbar button{padding:8px 12px;border:1px solid #ffffff55;border-radius:8px;color:#fff;background:transparent;cursor:pointer}@media(max-width:640px){.topbar{align-items:flex-start;gap:12px;padding:16px;flex-direction:column}.toolbar{width:100%;flex-wrap:wrap}}
-    /* Account page layout based on the provided reference */
-    #accounts .panel{padding:22px;border-radius:12px;box-shadow:0 2px 10px var(--shadow)}
-    #accounts .panel-head{align-items:flex-start;flex-wrap:wrap;margin-bottom:18px}
-    #accounts .panel-head h2{font-size:20px}
-    .account-toolbar{display:flex;gap:9px;flex-wrap:wrap}
-    .account-toolbar button{padding:8px 14px;border-radius:6px}
-    .account-summary{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px}
-    .account-source{margin-right:4px;color:var(--muted);font-size:13px}
-    .account-filter{padding:6px 13px;border:0;border-radius:18px;color:var(--secondary-text);background:var(--secondary);cursor:pointer}
-    .account-filter.active{color:#fff;background:#4f66e8}
-    .account-search{min-width:250px;margin-left:auto;padding:8px 12px;border:1px solid var(--border);border-radius:6px}
-    .account-table-wrap{overflow-x:auto;border:1px solid color-mix(in srgb,var(--border) 65%,transparent);border-radius:9px}
+    /* ── Reset & base ── */
+    *{box-sizing:border-box;margin:0;padding:0}
+    :root{
+      --primary:#6366f1;--primary-dark:#4f46e5;--primary-light:#818cf8;
+      --accent:#8b5cf6;--success:#10b981;--danger:#ef4444;--warning:#f59e0b;
+      --info:#06b6d4;
+      --bg:#f0f2f8;--surface:#ffffff;--surface2:#f8fafd;
+      --border:#e2e8f0;--border-light:#eef2f8;
+      --text:#0f172a;--text2:#475569;--text3:#94a3b8;
+      --sidebar-bg:linear-gradient(170deg,#1e1b4b 0%,#312e81 50%,#1e1b4b 100%);
+      --sidebar-w:240px;
+      --radius-sm:8px;--radius:14px;--radius-lg:20px;--radius-xl:28px;
+      --shadow-sm:0 1px 3px rgba(15,23,42,.06),0 1px 2px rgba(15,23,42,.04);
+      --shadow:0 4px 16px rgba(15,23,42,.08),0 2px 6px rgba(15,23,42,.05);
+      --shadow-lg:0 12px 40px rgba(15,23,42,.12),0 4px 14px rgba(15,23,42,.08);
+      --shadow-primary:0 8px 24px rgba(99,102,241,.3);
+      color-scheme:light;
+    }
+    :root[data-theme="dark"]{
+      color-scheme:dark;
+      --bg:#0d1117;--surface:#161b22;--surface2:#1c2333;
+      --border:#30363d;--border-light:#21262d;
+      --text:#e6edf3;--text2:#8b949e;--text3:#6e7681;
+      --shadow-sm:0 1px 3px rgba(0,0,0,.4);
+      --shadow:0 4px 16px rgba(0,0,0,.4);
+      --shadow-lg:0 12px 40px rgba(0,0,0,.5);
+    }
+    body{font-family:Inter,"PingFang SC","Microsoft YaHei",sans-serif;color:var(--text);background:var(--bg);min-height:100vh;-webkit-font-smoothing:antialiased}
+    button,input,textarea,select{font:inherit}
+    .hidden{display:none!important}
+
+    /* ── Transitions ── */
+    button,input,textarea,a{transition:all .2s ease}
+    button:not(:disabled):active{transform:scale(.97)}
+    button:disabled{opacity:.5;cursor:not-allowed}
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar{width:6px;height:6px}
+    ::-webkit-scrollbar-track{background:transparent}
+    ::-webkit-scrollbar-thumb{background:var(--border);border-radius:99px}
+
+    /* ══════════ LOGIN PAGE ══════════ */
+    .login{
+      min-height:100vh;display:grid;place-items:center;padding:24px;
+      background:#0f0c29;
+      background:linear-gradient(135deg,#0f0c29 0%,#302b63 50%,#24243e 100%);
+      position:relative;overflow:hidden;
+    }
+    .login::before,.login::after{
+      content:"";position:absolute;border-radius:50%;
+      background:radial-gradient(circle,rgba(99,102,241,.35),transparent 70%);
+      animation:pulse 8s ease-in-out infinite;
+    }
+    .login::before{width:600px;height:600px;top:-200px;left:-200px}
+    .login::after{width:500px;height:500px;bottom:-150px;right:-100px;animation-delay:-4s}
+    @keyframes pulse{0%,100%{transform:scale(1);opacity:.7}50%{transform:scale(1.1);opacity:1}}
+    .login .card{
+      position:relative;z-index:1;
+      width:min(420px,100%);padding:44px 40px;
+      background:rgba(255,255,255,.07);
+      border:1px solid rgba(255,255,255,.14);
+      border-radius:var(--radius-xl);
+      backdrop-filter:blur(24px);
+      box-shadow:0 32px 80px rgba(0,0,0,.4);
+    }
+    .login .card .brand{display:flex;align-items:center;gap:12px;margin-bottom:28px}
+    .login .card .brand-icon{
+      width:44px;height:44px;display:grid;place-items:center;
+      background:linear-gradient(135deg,var(--primary),var(--accent));
+      border-radius:12px;font-size:22px;
+    }
+    .login .card .brand h1{font-size:22px;font-weight:700;color:#fff;letter-spacing:-.03em}
+    .login .card .brand p{font-size:13px;color:rgba(255,255,255,.55);margin-top:1px}
+    .login .card .subtitle{color:rgba(255,255,255,.6);font-size:14px;margin-bottom:28px;line-height:1.6}
+    .login .field{display:grid;gap:7px;margin-bottom:16px}
+    .login .field label{color:rgba(255,255,255,.75);font-size:13px;font-weight:500}
+    .login .field input{
+      padding:12px 16px;
+      background:rgba(255,255,255,.08);
+      border:1px solid rgba(255,255,255,.15);
+      border-radius:var(--radius-sm);
+      color:#fff;font-size:15px;outline:none;
+    }
+    .login .field input::placeholder{color:rgba(255,255,255,.35)}
+    .login .field input:focus{border-color:var(--primary-light);background:rgba(255,255,255,.12);box-shadow:0 0 0 4px rgba(99,102,241,.25)}
+    .login .error{min-height:20px;color:#fca5a5;font-size:13px;margin-bottom:8px}
+    .login .btn-login{
+      width:100%;padding:13px;margin-top:4px;
+      background:linear-gradient(135deg,var(--primary),var(--accent));
+      border:none;border-radius:var(--radius-sm);
+      color:#fff;font-size:15px;font-weight:600;cursor:pointer;
+      box-shadow:var(--shadow-primary);letter-spacing:.01em;
+    }
+    .login .btn-login:hover{box-shadow:0 10px 32px rgba(99,102,241,.45);transform:translateY(-1px)}
+
+    /* ══════════ SHELL LAYOUT ══════════ */
+    .shell{display:flex;min-height:100vh}
+
+    /* ── Sidebar ── */
+    .sidebar{
+      width:var(--sidebar-w);flex-shrink:0;
+      background:var(--sidebar-bg);
+      display:flex;flex-direction:column;
+      position:fixed;top:0;left:0;bottom:0;z-index:30;
+      overflow-y:auto;
+    }
+    .sidebar-brand{
+      display:flex;align-items:center;gap:11px;
+      padding:24px 20px 20px;border-bottom:1px solid rgba(255,255,255,.08);
+    }
+    .sidebar-brand .brand-icon{
+      width:38px;height:38px;display:grid;place-items:center;flex-shrink:0;
+      background:linear-gradient(135deg,var(--primary),var(--accent));
+      border-radius:10px;font-size:18px;box-shadow:0 4px 14px rgba(99,102,241,.4);
+    }
+    .sidebar-brand .brand-text{color:#fff}
+    .sidebar-brand .brand-text h1{font-size:15px;font-weight:700;letter-spacing:-.02em;white-space:nowrap}
+    .sidebar-brand .brand-text span{font-size:11px;color:rgba(255,255,255,.45);white-space:nowrap}
+    .sidebar-nav{padding:14px 10px;flex:1}
+    .sidebar-nav .nav-section{font-size:10px;font-weight:700;color:rgba(255,255,255,.3);letter-spacing:.1em;text-transform:uppercase;padding:6px 12px;margin-top:8px;margin-bottom:4px}
+    .tab{
+      display:flex;align-items:center;gap:11px;width:100%;
+      padding:10px 14px;border:none;border-radius:10px;
+      color:rgba(255,255,255,.6);background:transparent;
+      cursor:pointer;font-size:14px;font-weight:500;text-align:left;
+      position:relative;
+    }
+    .tab .nav-icon{width:20px;height:20px;display:grid;place-items:center;flex-shrink:0;font-size:16px}
+    .tab:hover{background:rgba(255,255,255,.08);color:rgba(255,255,255,.9)}
+    .tab.active{
+      background:rgba(99,102,241,.25);color:#fff;
+      box-shadow:0 2px 8px rgba(99,102,241,.2);
+    }
+    .tab.active::before{
+      content:"";position:absolute;left:0;top:50%;transform:translateY(-50%);
+      width:3px;height:60%;background:var(--primary-light);border-radius:0 3px 3px 0;
+    }
+    .sidebar-footer{
+      padding:14px 10px;border-top:1px solid rgba(255,255,255,.08);
+      display:flex;flex-direction:column;gap:6px;
+    }
+    .sidebar-footer-btn{
+      display:flex;align-items:center;gap:11px;width:100%;
+      padding:9px 14px;border:none;border-radius:10px;
+      color:rgba(255,255,255,.55);background:transparent;
+      cursor:pointer;font-size:13px;font-weight:500;
+    }
+    .sidebar-footer-btn:hover{background:rgba(255,255,255,.08);color:rgba(255,255,255,.85)}
+    .sidebar-footer-btn .nav-icon{width:20px;height:20px;display:grid;place-items:center;flex-shrink:0;font-size:15px}
+    #logoutButton{color:rgba(239,68,68,.8)}
+    #logoutButton:hover{background:rgba(239,68,68,.12);color:#ef4444}
+
+    /* ── Main content ── */
+    .main{margin-left:var(--sidebar-w);flex:1;display:flex;flex-direction:column;min-height:100vh}
+    .topbar{
+      position:sticky;top:0;z-index:20;
+      display:flex;align-items:center;justify-content:space-between;
+      padding:16px 28px;
+      background:rgba(var(--bg-rgb,240,242,248),.85);
+      border-bottom:1px solid var(--border-light);
+      backdrop-filter:blur(16px);
+    }
+    :root[data-theme="dark"] .topbar{background:rgba(13,17,23,.85)}
+    .topbar-title{font-size:17px;font-weight:700;color:var(--text);letter-spacing:-.02em}
+    .topbar-actions{display:flex;align-items:center;gap:8px}
+    .topbar-btn{
+      display:flex;align-items:center;gap:6px;
+      padding:7px 14px;border:1px solid var(--border);border-radius:var(--radius-sm);
+      background:var(--surface);color:var(--text2);cursor:pointer;font-size:13px;font-weight:500;
+      box-shadow:var(--shadow-sm);
+    }
+    .topbar-btn:hover{border-color:var(--primary);color:var(--primary);background:var(--surface)}
+    #themeButton,#languageButton{min-width:0}
+    .content{flex:1;padding:24px 28px 48px}
+
+    /* ══════════ METRIC CARDS ══════════ */
+    .metrics{display:grid;grid-template-columns:repeat(6,1fr);gap:16px;margin-bottom:24px}
+    .metric{
+      background:var(--surface);border:1px solid var(--border-light);
+      border-radius:var(--radius-lg);padding:20px 18px;
+      box-shadow:var(--shadow-sm);position:relative;overflow:hidden;
+      transition:box-shadow .25s,transform .25s;
+    }
+    .metric:hover{box-shadow:var(--shadow);transform:translateY(-2px)}
+    .metric .m-icon{
+      width:40px;height:40px;border-radius:10px;display:grid;place-items:center;
+      font-size:18px;margin-bottom:12px;
+    }
+    .metric:nth-child(1) .m-icon{background:linear-gradient(135deg,#ede9fe,#ddd6fe);color:#7c3aed}
+    .metric:nth-child(2) .m-icon{background:linear-gradient(135deg,#d1fae5,#a7f3d0);color:#059669}
+    .metric:nth-child(3) .m-icon{background:linear-gradient(135deg,#fee2e2,#fecaca);color:#dc2626}
+    .metric:nth-child(4) .m-icon{background:linear-gradient(135deg,#e0f2fe,#bae6fd);color:#0284c7}
+    .metric:nth-child(5) .m-icon{background:linear-gradient(135deg,#fef3c7,#fde68a);color:#d97706}
+    .metric:nth-child(6) .m-icon{background:linear-gradient(135deg,#fce7f3,#fbcfe8);color:#be185d}
+    .metric span{font-size:12px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em}
+    .metric strong{display:block;font-size:26px;font-weight:700;color:var(--text);letter-spacing:-.03em;margin-top:4px}
+    .metric::after{
+      content:"";position:absolute;right:-20px;bottom:-20px;
+      width:80px;height:80px;border-radius:50%;
+      background:linear-gradient(135deg,var(--primary),var(--accent));opacity:.04;
+    }
+
+    /* ══════════ PANEL ══════════ */
+    .panel{
+      background:var(--surface);border:1px solid var(--border-light);
+      border-radius:var(--radius-lg);padding:24px;
+      box-shadow:var(--shadow-sm);margin-bottom:20px;
+    }
+    .panel-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:20px}
+    .panel h2{font-size:17px;font-weight:700;color:var(--text);letter-spacing:-.02em}
+    .panel > .empty-desc{font-size:13px;color:var(--text3);margin:-8px 0 16px;line-height:1.6}
+
+    /* ══════════ BUTTONS ══════════ */
+    .primary,.secondary,.danger{
+      display:inline-flex;align-items:center;gap:6px;
+      padding:9px 16px;border:none;border-radius:var(--radius-sm);
+      cursor:pointer;font-size:13px;font-weight:600;white-space:nowrap;
+    }
+    .primary{
+      background:linear-gradient(135deg,var(--primary),var(--primary-dark));
+      color:#fff;box-shadow:0 4px 14px rgba(99,102,241,.25);
+    }
+    .primary:hover{box-shadow:0 6px 20px rgba(99,102,241,.4);transform:translateY(-1px)}
+    .secondary{background:var(--surface2);color:var(--text2);border:1px solid var(--border)}
+    .secondary:hover{border-color:var(--primary);color:var(--primary);background:var(--surface)}
+    .danger{background:linear-gradient(135deg,#ef4444,#dc2626);color:#fff;box-shadow:0 4px 12px rgba(239,68,68,.2)}
+    .danger:hover{box-shadow:0 6px 18px rgba(239,68,68,.35);transform:translateY(-1px)}
+    .wide{width:100%;justify-content:center}
+    .actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+
+    /* ══════════ FORM FIELDS ══════════ */
+    .field{display:grid;gap:6px;margin-bottom:14px}
+    .field label,.field>span:first-child{font-size:13px;font-weight:600;color:var(--text2)}
+    .field input,.field textarea,#keyName{
+      padding:10px 14px;
+      background:var(--surface2);
+      border:1.5px solid var(--border);
+      border-radius:var(--radius-sm);
+      color:var(--text);font-size:14px;outline:none;
+      transition:border-color .2s,box-shadow .2s;
+    }
+    .field input:focus,.field textarea:focus,#keyName:focus,.account-search:focus{
+      border-color:var(--primary);background:var(--surface);
+      box-shadow:0 0 0 4px rgba(99,102,241,.1);
+    }
+    .form-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:0 20px}
+    .form-grid .full{grid-column:1/-1}
+    .error{min-height:18px;color:var(--danger);font-size:13px;margin-bottom:8px}
+    .error.full{grid-column:1/-1}
+    input[type="checkbox"]{
+      width:16px;height:16px;accent-color:var(--primary);cursor:pointer;
+    }
+    label span{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:var(--text2)}
+
+    /* ══════════ TABLES ══════════ */
+    .table-wrap{overflow-x:auto;border:1px solid var(--border-light);border-radius:var(--radius);margin-top:4px}
+    table{width:100%;border-collapse:collapse}
+    thead th{
+      padding:11px 14px;background:var(--surface2);
+      font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;
+      color:var(--text3);text-align:left;white-space:nowrap;
+    }
+    thead th:first-child{border-radius:var(--radius) 0 0 0}
+    thead th:last-child{border-radius:0 var(--radius) 0 0}
+    tbody td{
+      padding:13px 14px;border-top:1px solid var(--border-light);
+      font-size:13px;color:var(--text);vertical-align:middle;white-space:nowrap;
+    }
+    tbody tr{transition:background .15s}
+    tbody tr:hover{background:color-mix(in srgb,var(--primary) 4%,var(--surface))}
+    td.empty,td.recent-empty{
+      padding:40px!important;text-align:center;color:var(--text3);
+      font-size:14px;white-space:normal!important;
+    }
+
+    /* ── Account specific ── */
+    .account-summary{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:16px}
+    .account-filter{
+      display:inline-flex;align-items:center;gap:5px;
+      padding:6px 14px;border:1.5px solid var(--border);border-radius:99px;
+      background:var(--surface);color:var(--text2);cursor:pointer;font-size:13px;font-weight:600;
+    }
+    .account-filter:hover{border-color:var(--primary);color:var(--primary)}
+    .account-filter.active{border-color:var(--primary);background:var(--primary);color:#fff;box-shadow:0 4px 12px rgba(99,102,241,.25)}
+    .account-filter b{font-weight:700}
+    .account-search{
+      padding:8px 14px;border:1.5px solid var(--border);border-radius:var(--radius-sm);
+      background:var(--surface);color:var(--text);font-size:13px;outline:none;
+      margin-left:auto;min-width:220px;
+    }
+    .account-toolbar{display:flex;gap:8px;flex-wrap:wrap}
+    .account-add-form,.account-import-form{
+      margin-top:20px;padding-top:20px;
+      border-top:1px solid var(--border-light);
+    }
+
+    /* ── Account state badges ── */
+    .account-state{
+      display:inline-flex;align-items:center;gap:6px;
+      padding:4px 10px;border-radius:99px;font-size:12px;font-weight:600;
+    }
+    .account-state::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;flex-shrink:0}
+    .account-state{background:#dcfce7;color:#15803d}
+    .account-state.disabled{background:#f1f5f9;color:#64748b}
+    .account-state.error,.account-state.blocked{background:#fee2e2;color:#dc2626}
+    .account-state.cooldown{background:#fef3c7;color:#d97706}
+    :root[data-theme="dark"] .account-state{background:rgba(21,128,61,.15);color:#4ade80}
+    :root[data-theme="dark"] .account-state.disabled{background:rgba(100,116,139,.15);color:#94a3b8}
+    :root[data-theme="dark"] .account-state.error,:root[data-theme="dark"] .account-state.blocked{background:rgba(220,38,38,.15);color:#f87171}
+    :root[data-theme="dark"] .account-state.cooldown{background:rgba(217,119,6,.15);color:#fbbf24}
+
+    .session-value{
+      display:inline-block;max-width:140px;overflow:hidden;
+      color:var(--text3);font-family:"JetBrains Mono",monospace;font-size:12px;
+      text-overflow:ellipsis;vertical-align:middle;
+    }
+    .ok-count{color:var(--success);font-weight:700}
+    .fail-count{color:var(--danger);font-weight:700}
+    .row-actions{display:flex;gap:6px}
+    .row-actions button{padding:5px 11px;font-size:12px;border-radius:6px}
+
+    /* ── Request status badges ── */
+    .request-model{font-family:"JetBrains Mono",monospace;font-size:12px;
+      background:var(--surface2);padding:3px 8px;border-radius:5px;color:var(--text2)}
+    .request-status{
+      display:inline-flex;align-items:center;gap:5px;
+      padding:4px 10px;border-radius:99px;font-size:12px;font-weight:600;
+      background:#dcfce7;color:#15803d;
+    }
+    .request-status::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+    .request-status.failed{background:#fee2e2;color:#dc2626}
+    :root[data-theme="dark"] .request-status{background:rgba(21,128,61,.15);color:#4ade80}
+    :root[data-theme="dark"] .request-status.failed{background:rgba(220,38,38,.15);color:#f87171}
+    .request-token{color:var(--text3);font-size:12px}
+
+    /* ── Key display ── */
+    #newKey{
+      padding:16px 18px;border-radius:var(--radius-sm);
+      background:linear-gradient(135deg,rgba(99,102,241,.1),rgba(139,92,246,.1));
+      border:1.5px solid rgba(99,102,241,.25);
+      color:var(--text);font-size:13px;font-family:"JetBrains Mono",monospace;
+      word-break:break-all;line-height:1.7;margin:14px 0;
+    }
+    #keyForm{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-top:18px}
+    #keyName{flex:1;min-width:200px}
+
+    /* ── Model maps code ── */
+    code{
+      font-family:"JetBrains Mono",monospace;font-size:12px;
+      background:var(--surface2);padding:3px 8px;border-radius:5px;
+      color:var(--primary);
+    }
+
+    /* ── Notice / Toast ── */
+    .notice{
+      position:fixed;right:20px;bottom:20px;z-index:100;
+      max-width:360px;padding:14px 18px;
+      background:var(--text);color:var(--surface);
+      border-radius:var(--radius);
+      box-shadow:var(--shadow-lg);
+      font-size:14px;font-weight:500;
+      animation:slideUp .3s cubic-bezier(.34,1.56,.64,1);
+    }
+    @keyframes slideUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
+
+    /* ══════════ ACCOUNT TABLE ══════════ */
+    .account-table-wrap{overflow-x:auto;border:1px solid var(--border-light);border-radius:var(--radius)}
     #accounts table{min-width:980px;margin:0}
-    #accounts th{padding:12px 14px;color:var(--muted);font-size:12px;background:color-mix(in srgb,var(--surface) 92%,var(--page));white-space:nowrap}
-    #accounts td{padding:12px 14px;white-space:nowrap}
-    .account-state{display:inline-flex;align-items:center;gap:6px;color:#16a34a}
-    .account-state::before{width:8px;height:8px;border-radius:50%;background:currentColor;content:""}
-    .account-state.disabled,.account-state.error{color:#dc2626}
-    .account-state.cooldown{color:#d97706}
-    .session-value{display:inline-block;max-width:150px;overflow:hidden;color:var(--muted);font-family:monospace;text-overflow:ellipsis;vertical-align:middle}
-    .ok-count{color:#16a34a;font-weight:600}.fail-count{color:#dc2626;font-weight:600}
-    .row-actions{display:flex;gap:6px}.row-actions button{padding:5px 11px;border-radius:5px}
-    .account-add-form,.account-import-form{margin-top:18px;padding-top:16px;border-top:1px solid var(--border)}
-    @media(max-width:760px){.account-search{width:100%;margin-left:0}.account-toolbar{width:100%}}
-    .recent-table-wrap{margin-top:18px;overflow-x:auto;border:1px solid color-mix(in srgb,var(--border) 65%,transparent);border-radius:10px}.recent-table{min-width:820px;margin:0}.recent-table th{padding:12px 16px;color:var(--muted);font-size:12px;font-weight:600;text-align:left;background:color-mix(in srgb,var(--surface) 92%,var(--page));white-space:nowrap}.recent-table td{padding:14px 16px;border-top:1px solid color-mix(in srgb,var(--border) 45%,transparent);white-space:nowrap}.request-model{font-family:monospace;font-size:12px}.request-status{display:inline-flex;align-items:center;gap:6px;padding:4px 9px;border-radius:14px;color:#15803d;background:#dcfce7;font-size:12px;font-weight:600}.request-status::before{width:7px;height:7px;border-radius:50%;background:currentColor;content:""}.request-status.failed{color:#b91c1c;background:#fee2e2}.request-token{color:var(--muted);font-size:12px}.recent-empty{padding:36px!important;color:var(--muted);text-align:center}
-    /* Modern visual refresh */
-    :root{--primary:#6366f1;--primary-hover:#4f46e5;--danger:#ef4444;--radius:16px;--glass:rgba(255,255,255,.82)}
-    body{background-image:radial-gradient(circle at 10% 0%,rgba(99,102,241,.12),transparent 32%),radial-gradient(circle at 100% 20%,rgba(14,165,233,.1),transparent 28%);background-attachment:fixed}
-    .login{background:radial-gradient(circle at 20% 20%,#4338ca 0,transparent 35%),radial-gradient(circle at 80% 80%,#0891b2 0,transparent 35%),#0f172a}
-    .login .card{padding:40px;border:1px solid rgba(255,255,255,.55);border-radius:24px;box-shadow:0 30px 80px rgba(2,6,23,.35);backdrop-filter:blur(20px)}
-    .login .card h1{margin:0 0 8px;font-size:28px;letter-spacing:-.04em}.login .card p{margin:0 0 24px;color:var(--muted)}
-    button,input,textarea{transition:border-color .2s,box-shadow .2s,background-color .2s,transform .15s}
-    button:not(:disabled):active{transform:scale(.97)}button:disabled{cursor:not-allowed;opacity:.55}
-    .field input,.field textarea,#keyName{outline:0;border:1px solid var(--border);border-radius:11px}
-    .field input:focus,.field textarea:focus,#keyName:focus,.account-search:focus{border-color:var(--primary);box-shadow:0 0 0 4px rgba(99,102,241,.14)}
-    .primary,.tab.active{background:linear-gradient(135deg,var(--primary),#4f46e5);box-shadow:0 6px 16px rgba(79,70,229,.2)}.primary:hover{background:var(--primary-hover)}
-    .secondary:hover,.tab:hover{background:color-mix(in srgb,var(--secondary) 78%,var(--primary))}.danger{background:var(--danger)}
-    .topbar{position:sticky;top:0;z-index:20;padding:16px 32px;border-bottom:1px solid rgba(255,255,255,.1);background:color-mix(in srgb,var(--topbar) 88%,transparent);box-shadow:0 8px 30px rgba(2,6,23,.12);backdrop-filter:blur(18px)}
-    .topbar h1{font-size:18px;font-weight:700;letter-spacing:-.02em}.toolbar button:hover{background:rgba(255,255,255,.12)}
-    .content{margin:28px auto 48px}.tabs{padding:6px;border:1px solid color-mix(in srgb,var(--border) 55%,transparent);border-radius:14px;background:color-mix(in srgb,var(--surface) 86%,transparent);box-shadow:0 6px 20px var(--shadow);backdrop-filter:blur(14px)}
-    .tab{border-radius:10px;font-weight:600}.metrics{gap:16px;margin-top:22px}
-    .metric,.panel{border:1px solid color-mix(in srgb,var(--border) 48%,transparent);border-radius:var(--radius);box-shadow:0 10px 35px var(--shadow)}
-    .metric{position:relative;overflow:hidden;padding:22px}.metric::after{position:absolute;right:-18px;bottom:-22px;width:76px;height:76px;border-radius:50%;background:linear-gradient(135deg,rgba(99,102,241,.12),rgba(14,165,233,.08));content:""}.metric strong{font-size:28px;letter-spacing:-.04em}.metric span{font-size:13px;font-weight:600}
-    .panel{padding:24px}.panel h2{font-size:19px;letter-spacing:-.025em}
-    table th{font-weight:600;letter-spacing:.03em;text-transform:uppercase}table tbody tr{transition:background-color .15s}table tbody tr:hover{background:color-mix(in srgb,var(--primary) 5%,transparent)}
-    .notice{position:fixed;right:24px;bottom:24px;z-index:50;max-width:min(420px,calc(100% - 48px));padding:14px 18px;border:1px solid rgba(255,255,255,.2);border-radius:12px;color:#fff;background:#0f172a;box-shadow:0 16px 40px rgba(2,6,23,.3)}
-    @media(max-width:1000px){.metrics{grid-template-columns:repeat(3,1fr)}}
-    @media(max-width:640px){.content{width:min(100% - 20px,1240px);margin-top:16px}.metrics{grid-template-columns:repeat(2,1fr);gap:10px}.metric{padding:16px}.metric strong{font-size:23px}.panel{padding:16px}.tabs{display:grid;grid-template-columns:repeat(3,1fr)}.tab{padding:9px 6px}.login .card{padding:28px}}
+    .recent-table-wrap{overflow-x:auto;border:1px solid var(--border-light);border-radius:var(--radius);margin-top:4px}
+    .recent-table{min-width:800px;margin:0}
+
+    /* ══════════ PAGE TITLE SECTIONS ══════════ */
+    .page-header{margin-bottom:24px}
+    .page-header h2{font-size:22px;font-weight:800;letter-spacing:-.03em;color:var(--text)}
+    .page-header p{font-size:14px;color:var(--text3);margin-top:4px}
+
+    /* ══════════ RESPONSIVE ══════════ */
+    @media(max-width:1100px){.metrics{grid-template-columns:repeat(3,1fr)}}
+    @media(max-width:760px){
+      :root{--sidebar-w:0px}
+      .sidebar{transform:translateX(-240px);width:240px;transition:transform .3s}
+      .sidebar.open{transform:translateX(0)}
+      .main{margin-left:0}
+      .content{padding:16px 16px 48px}
+      .topbar{padding:12px 16px}
+      .metrics{grid-template-columns:repeat(2,1fr);gap:10px}
+      .account-search{width:100%;margin-left:0}
+      .form-grid{grid-template-columns:1fr}
+    }
+    @media(max-width:480px){.metrics{grid-template-columns:1fr}}
   </style>
 </head>
 <body>
-  <section id="loginView" class="login"><form id="loginForm" class="card"><h1>管理控制台</h1><p>使用管理员密码登录 Claude2API。</p><label class="field">管理员密码<input id="password" type="password" required autofocus></label><div id="loginError" class="error"></div><button id="loginButton" class="primary wide" type="submit">登录</button></form></section>
-  <section id="consoleView" class="shell hidden">
-    <header class="topbar"><h1 data-i18n="consoleTitle">Claude2API 管理控制台</h1><div class="toolbar"><button id="languageButton" type="button">English</button><button id="themeButton" type="button">深色</button><button id="logoutButton" class="logout" data-i18n="logout">退出登录</button></div></header>
+
+<!-- ═══════════ LOGIN PAGE ═══════════ -->
+<section id="loginView" class="login">
+  <form id="loginForm" class="card">
+    <div class="brand">
+      <div class="brand-icon">🤖</div>
+      <div>
+        <h1>Claude2API</h1>
+        <p>管理控制台</p>
+      </div>
+    </div>
+    <p class="subtitle">使用管理员密码登录 Claude2API。</p>
+    <label class="field">
+      <span>管理员密码</span>
+      <input id="password" type="password" required autofocus placeholder="输入管理员密码">
+    </label>
+    <div id="loginError" class="error"></div>
+    <button id="loginButton" class="btn-login" type="submit">登录</button>
+  </form>
+</section>
+
+<!-- ═══════════ CONSOLE ═══════════ -->
+<section id="consoleView" class="shell hidden">
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <div class="brand-icon">🤖</div>
+      <div class="brand-text">
+        <h1>Claude2API</h1>
+        <span>管理控制台</span>
+      </div>
+    </div>
+    <nav class="sidebar-nav">
+      <div class="nav-section">主菜单</div>
+      <button class="tab active" data-page="stats">
+        <span class="nav-icon">📊</span><span>统计</span>
+      </button>
+      <button class="tab" data-page="accounts">
+        <span class="nav-icon">👤</span><span>账号</span>
+      </button>
+      <div class="nav-section">配置</div>
+      <button class="tab" data-page="proxy">
+        <span class="nav-icon">🔗</span><span>代理</span>
+      </button>
+      <button class="tab" data-page="rate">
+        <span class="nav-icon">⚡</span><span>限速</span>
+      </button>
+      <button class="tab" data-page="keepalive">
+        <span class="nav-icon">💓</span><span>保活</span>
+      </button>
+      <div class="nav-section">访问控制</div>
+      <button class="tab" data-page="keys">
+        <span class="nav-icon">🔑</span><span>API Key</span>
+      </button>
+      <button class="tab" data-page="modelmaps">
+        <span class="nav-icon">🗺️</span><span>模型映射</span>
+      </button>
+      <button class="tab" data-page="security">
+        <span class="nav-icon">🔒</span><span>安全</span>
+      </button>
+    </nav>
+    <div class="sidebar-footer">
+      <button id="languageButton" class="sidebar-footer-btn" type="button">
+        <span class="nav-icon">🌐</span><span>English</span>
+      </button>
+      <button id="themeButton" class="sidebar-footer-btn" type="button">
+        <span class="nav-icon">🌙</span><span data-i18n-theme>深色</span>
+      </button>
+      <button id="logoutButton" class="sidebar-footer-btn" data-i18n="logout" type="button">
+        <span class="nav-icon">🚪</span><span>退出登录</span>
+      </button>
+    </div>
+  </aside>
+
+  <!-- Main area -->
+  <div class="main">
+    <header class="topbar">
+      <span class="topbar-title" data-i18n="consoleTitle">Claude2API 管理控制台</span>
+      <div class="topbar-actions">
+      </div>
+    </header>
     <main class="content">
-      <nav class="tabs"><button class="tab active" data-page="stats">统计</button><button class="tab" data-page="accounts">账号</button><button class="tab" data-page="proxy">代理</button><button class="tab" data-page="rate">限速</button><button class="tab" data-page="keepalive">保活</button><button class="tab" data-page="keys">API Key</button><button class="tab" data-page="security">安全</button></nav>
-      <section id="stats" class="page"><div class="metrics"><article class="metric"><span>请求总数</span><strong id="requests">0</strong></article><article class="metric"><span>成功请求</span><strong id="successes">0</strong></article><article class="metric"><span>失败请求</span><strong id="failures">0</strong></article><article class="metric"><span>活跃请求</span><strong id="activeRequests">0</strong></article><article class="metric"><span>成功率</span><strong id="successRate">0%</strong></article><article class="metric"><span>平均延迟</span><strong id="latency">0 ms</strong></article></div><div class="panel"><h2>最近请求</h2><div class="recent-table-wrap"><table class="recent-table"><thead><tr><th>时间</th><th>模型</th><th>账号</th><th>状态</th><th>耗时</th><th>Token</th></tr></thead><tbody id="recentRequestsBody"></tbody></table></div></div></section>
-      <section id="accounts" class="page hidden"><div class="panel"><div class="panel-head"><h2>账号管理</h2><div class="account-toolbar"><button id="showAccountForm" class="primary" type="button">＋ 添加账号</button><button id="showImportForm" class="secondary" type="button">＋ 批量导入</button><button id="checkAccounts" class="primary" type="button">⚡ 一键激活</button><button id="restoreAllAccounts" class="secondary" type="button">◎ 恢复限速</button><button id="deleteBlockedAccounts" class="danger" type="button">删除封禁</button><button id="refreshAccounts" class="secondary" type="button">刷新</button></div></div><div class="account-summary"><span class="account-source">账号列表</span><button class="account-filter active" data-account-filter="all" type="button">全部 <b id="accountTotal">0</b></button><button class="account-filter" data-account-filter="active" type="button">活跃 <b id="accountActive">0</b></button><button class="account-filter" data-account-filter="cooldown" type="button">冷却中 <b id="accountCooldown">0</b></button><button class="account-filter" data-account-filter="disabled" type="button">停用 <b id="accountDisabled">0</b></button><button class="account-filter" data-account-filter="blocked" type="button">封禁 <b id="accountBlocked">0</b></button><input id="accountSearch" class="account-search" placeholder="搜索名称或 Session Key..."></div><div class="account-table-wrap"><table><thead><tr><th>状态</th><th>名称</th><th>SESSION KEY</th><th>今日</th><th>限制</th><th>请求</th><th>OK</th><th>失败</th><th>操作</th></tr></thead><tbody id="accountsBody"></tbody></table></div><form id="accountForm" class="form-grid account-add-form hidden"><label class="field">邮箱<input id="accountName" type="email"></label><label class="field">会话上限<input id="sessionLimit" type="number" min="0" value="0"></label><label class="field full">Session Key<input id="sessionKey"></label><div class="actions full"><button class="primary" type="submit">保存账号</button></div></form><form id="importForm" class="account-import-form hidden"><label class="field">批量导入（每行一个 Session Key 或 Cookie）<textarea id="importContent" rows="5"></textarea></label><button class="secondary" type="submit">导入</button></form></div></section>
-      <section id="proxy" class="page hidden"><div class="panel"><h2>代理配置</h2><form id="proxyForm"><label class="field"><span><input id="proxyEnabled" type="checkbox"> 启用上游代理</span></label><label class="field">代理 URL 模板<input id="proxyUrl" placeholder="http://proxy.example/{sid}"></label><button class="primary" type="submit">保存代理配置</button></form></div></section>
-      <section id="rate" class="page hidden"><div class="panel"><h2>全局限速</h2><form id="rateForm" class="form-grid"><label class="field full"><span><input id="rateEnabled" type="checkbox"> 启用限速</span></label><label class="field">每分钟请求数<input id="rpm" type="number" min="1"></label><label class="field">突发容量<input id="burst" type="number" min="1"></label><button class="primary" type="submit">保存限速配置</button></form></div></section>
-      <section id="keepalive" class="page hidden"><div class="panel"><h2>账号自动保活</h2><form id="keepAliveForm" class="form-grid"><label class="field full"><span><input id="keepAliveEnabled" type="checkbox"> 启用账号自动刷新保活</span></label><label class="field">检查间隔（分钟）<input id="keepAliveInterval" type="number" min="1" max="1440"></label><label class="field">单账号超时（秒）<input id="keepAliveTimeout" type="number" min="1" max="300"></label><button class="primary" type="submit">保存保活配置</button></form></div></section>
-      <section id="keys" class="page hidden"><div class="panel"><h2>总 Key 设置</h2><p class="empty">总 Key 可访问共享账号池中的所有可用账号。密钥仅保存哈希，设置后不会再次完整显示。</p><form id="masterKeyForm" class="form-grid"><label class="field full"><span><input id="masterKeyEnabled" type="checkbox"> 启用总 Key</span></label><label class="field full">总 Key<input id="masterKeyValue" type="password" minlength="16" maxlength="256" autocomplete="new-password" placeholder="留空表示不修改当前总 Key"></label><div class="actions full"><button class="primary" type="submit">保存总 Key</button><button id="deleteMasterKey" class="danger" type="button">删除总 Key</button></div></form><div id="masterKeyStatus" class="empty"></div></div><div class="panel"><h2>API Key 管理</h2><form id="keyForm" class="actions"><input id="keyName" placeholder="Key 名称" required><button class="primary" type="submit">创建 API Key</button></form><div id="newKey" class="notice hidden"></div><table><thead><tr><th>名称</th><th>前缀</th><th>状态</th><th>最后使用</th><th>操作</th></tr></thead><tbody id="keysBody"></tbody></table></div></section>
-      <section id="security" class="page hidden"><div class="panel"><h2>修改管理员密码</h2><p class="empty">密码修改成功后，所有管理会话将失效，需要使用新密码重新登录。</p><form id="changePasswordForm" class="form-grid"><label class="field full">当前密码<input id="currentPassword" type="password" required autocomplete="current-password"></label><label class="field">新密码<input id="newPassword" type="password" required minlength="8" autocomplete="new-password"></label><label class="field">确认新密码<input id="confirmPassword" type="password" required minlength="8" autocomplete="new-password"></label><div id="changePasswordError" class="error full"></div><div class="actions full"><button id="changePasswordButton" class="primary" type="submit">修改密码</button></div></form></div></section>
+
+      <!-- ── STATS PAGE ── -->
+      <section id="stats" class="page">
+        <div class="metrics">
+          <article class="metric">
+            <div class="m-icon">📈</div>
+            <span>请求总数</span>
+            <strong id="requests">0</strong>
+          </article>
+          <article class="metric">
+            <div class="m-icon">✅</div>
+            <span>成功请求</span>
+            <strong id="successes">0</strong>
+          </article>
+          <article class="metric">
+            <div class="m-icon">❌</div>
+            <span>失败请求</span>
+            <strong id="failures">0</strong>
+          </article>
+          <article class="metric">
+            <div class="m-icon">🔄</div>
+            <span>活跃请求</span>
+            <strong id="activeRequests">0</strong>
+          </article>
+          <article class="metric">
+            <div class="m-icon">🎯</div>
+            <span>成功率</span>
+            <strong id="successRate">0%</strong>
+          </article>
+          <article class="metric">
+            <div class="m-icon">⏱️</div>
+            <span>平均延迟</span>
+            <strong id="latency">0 ms</strong>
+          </article>
+        </div>
+        <div class="panel">
+          <h2>最近请求</h2>
+          <div class="recent-table-wrap">
+            <table class="recent-table">
+              <thead>
+                <tr>
+                  <th>时间</th><th>模型</th><th>账号</th>
+                  <th>状态</th><th>耗时</th><th>Token</th>
+                </tr>
+              </thead>
+              <tbody id="recentRequestsBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── ACCOUNTS PAGE ── -->
+      <section id="accounts" class="page hidden">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>账号管理</h2>
+            <div class="account-toolbar">
+              <button id="showAccountForm" class="primary" type="button">＋ 添加账号</button>
+              <button id="showImportForm" class="secondary" type="button">＋ 批量导入</button>
+              <button id="checkAccounts" class="primary" type="button">⚡ 一键激活</button>
+              <button id="restoreAllAccounts" class="secondary" type="button">◎ 恢复限速</button>
+              <button id="deleteBlockedAccounts" class="danger" type="button">删除封禁</button>
+              <button id="refreshAccounts" class="secondary" type="button">🔄 刷新</button>
+            </div>
+          </div>
+          <div class="account-summary">
+            <span style="font-size:13px;color:var(--text3);font-weight:600">账号列表</span>
+            <button class="account-filter active" data-account-filter="all" type="button">全部 <b id="accountTotal">0</b></button>
+            <button class="account-filter" data-account-filter="active" type="button">活跃 <b id="accountActive">0</b></button>
+            <button class="account-filter" data-account-filter="cooldown" type="button">冷却中 <b id="accountCooldown">0</b></button>
+            <button class="account-filter" data-account-filter="disabled" type="button">停用 <b id="accountDisabled">0</b></button>
+            <button class="account-filter" data-account-filter="blocked" type="button">封禁 <b id="accountBlocked">0</b></button>
+            <input id="accountSearch" class="account-search" placeholder="搜索名称或 Session Key...">
+          </div>
+          <div class="account-table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>状态</th><th>名称</th><th>SESSION KEY</th>
+                  <th>今日</th><th>限制</th><th>请求</th>
+                  <th>OK</th><th>失败</th><th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="accountsBody"></tbody>
+            </table>
+          </div>
+          <!-- Add form -->
+          <form id="accountForm" class="form-grid account-add-form hidden">
+            <label class="field">名称<input id="accountName" type="text" placeholder="留空则自动生成"></label>
+            <label class="field">会话上限<input id="sessionLimit" type="number" min="0" value="0"></label>
+            <label class="field full">Session Key<input id="sessionKey"></label>
+            <div class="actions full">
+              <button class="primary" type="submit">保存账号</button>
+            </div>
+          </form>
+          <!-- Import form -->
+          <form id="importForm" class="account-import-form hidden">
+            <label class="field full">批量导入（每行一个 Session Key 或 Cookie）
+              <textarea id="importContent" rows="5" placeholder="每行输入一个 Session Key 或 Cookie"></textarea>
+            </label>
+            <div class="actions">
+              <button class="primary" type="submit">导入</button>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <!-- ── PROXY PAGE ── -->
+      <section id="proxy" class="page hidden">
+        <div class="panel">
+          <h2>代理配置</h2>
+          <form id="proxyForm" style="margin-top:16px">
+            <label class="field">
+              <span><input id="proxyEnabled" type="checkbox"> 启用上游代理</span>
+            </label>
+            <label class="field">代理 URL 模板
+              <input id="proxyUrl" placeholder="http://proxy.example/{sid}">
+            </label>
+            <button class="primary" type="submit">保存代理配置</button>
+          </form>
+        </div>
+      </section>
+
+      <!-- ── RATE PAGE ── -->
+      <section id="rate" class="page hidden">
+        <div class="panel">
+          <h2>全局限速</h2>
+          <form id="rateForm" class="form-grid" style="margin-top:16px">
+            <label class="field full">
+              <span><input id="rateEnabled" type="checkbox"> 启用限速</span>
+            </label>
+            <label class="field">每分钟请求数<input id="rpm" type="number" min="1"></label>
+            <label class="field">突发容量<input id="burst" type="number" min="1"></label>
+            <div class="actions full" style="margin-top:4px">
+              <button class="primary" type="submit">保存限速配置</button>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <!-- ── KEEP ALIVE PAGE ── -->
+      <section id="keepalive" class="page hidden">
+        <div class="panel">
+          <h2>账号自动保活</h2>
+          <form id="keepAliveForm" class="form-grid" style="margin-top:16px">
+            <label class="field full">
+              <span><input id="keepAliveEnabled" type="checkbox"> 启用账号自动刷新保活</span>
+            </label>
+            <label class="field">检查间隔（分钟）<input id="keepAliveInterval" type="number" min="1" max="1440"></label>
+            <label class="field">单账号超时（秒）<input id="keepAliveTimeout" type="number" min="1" max="300"></label>
+            <div class="actions full" style="margin-top:4px">
+              <button class="primary" type="submit">保存保活配置</button>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <!-- ── API KEYS PAGE ── -->
+      <section id="keys" class="page hidden">
+        <div class="panel">
+          <h2>API Key 管理</h2>
+          <p class="empty-desc">API Key 可访问共享账号池中的所有可用账号。密钥仅在创建时完整显示一次，请立即复制保存。</p>
+          <form id="keyForm">
+            <input id="keyName" placeholder="Key 名称" required>
+            <button class="primary" type="submit">创建 API Key</button>
+          </form>
+          <div id="newKey" class="notice hidden"></div>
+          <div class="table-wrap" style="margin-top:16px">
+            <table>
+              <thead>
+                <tr><th>名称</th><th>前缀</th><th>状态</th><th>最后使用</th><th>操作</th></tr>
+              </thead>
+              <tbody id="keysBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── MODEL MAPS PAGE ── -->
+      <section id="modelmaps" class="page hidden">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>模型映射</h2>
+            <div class="actions">
+              <button id="showModelMapForm" class="primary" type="button">＋ 添加映射</button>
+              <button id="refreshModelMaps" class="secondary" type="button">刷新</button>
+            </div>
+          </div>
+          <p class="empty-desc">将任意模型名称（如 gpt-4o）映射到后端支持的 Claude 模型。启用的映射将在请求解析时优先生效。</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>来源模型</th><th>目标模型</th><th>状态</th><th>操作</th></tr>
+              </thead>
+              <tbody id="modelMapsBody"></tbody>
+            </table>
+          </div>
+          <form id="modelMapForm" class="form-grid account-add-form hidden">
+            <label class="field">来源模型名称（From）
+              <input id="mapFrom" type="text" placeholder="例如：gpt-4o" required>
+            </label>
+            <label class="field">目标 Claude 模型（To）
+              <input id="mapTo" type="text" placeholder="例如：claude-sonnet-5" required>
+            </label>
+            <div class="actions full">
+              <button class="primary" type="submit">保存映射</button>
+              <button class="secondary" id="cancelModelMapForm" type="button">取消</button>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <!-- ── SECURITY PAGE ── -->
+      <section id="security" class="page hidden">
+        <div class="panel">
+          <h2>修改管理员密码</h2>
+          <p class="empty-desc">密码修改成功后，所有管理会话将失效，需要使用新密码重新登录。</p>
+          <form id="changePasswordForm" class="form-grid" style="margin-top:16px">
+            <label class="field full">当前密码
+              <input id="currentPassword" type="password" required autocomplete="current-password">
+            </label>
+            <label class="field">新密码
+              <input id="newPassword" type="password" required minlength="8" autocomplete="new-password">
+            </label>
+            <label class="field">确认新密码
+              <input id="confirmPassword" type="password" required minlength="8" autocomplete="new-password">
+            </label>
+            <div id="changePasswordError" class="error full"></div>
+            <div class="actions full">
+              <button id="changePasswordButton" class="primary" type="submit">修改密码</button>
+            </div>
+          </form>
+        </div>
+      </section>
+
       <div id="message" class="notice hidden"></div>
     </main>
-  </section>
-  <script>
-    const $=id=>document.getElementById(id),loginView=$('loginView'),consoleView=$('consoleView');
-    const translations={zh:{consoleTitle:'Claude2API 管理控制台',logout:'退出登录',language:'English',light:'浅色',dark:'深色'},en:{consoleTitle:'Claude2API Admin Console',logout:'Log out',language:'中文',light:'Light',dark:'Dark'}};
-    const zhToEn={'管理控制台':'Admin Console','使用管理员密码登录 Claude2API。':'Sign in to Claude2API with the administrator password.','管理员密码':'Administrator password','登录':'Sign in','统计':'Statistics','账号':'Accounts','代理':'Proxy','限速':'Rate Limit','保活':'Keep Alive','安全':'Security','修改管理员密码':'Change administrator password','密码修改成功后，所有管理会话将失效，需要使用新密码重新登录。':'After the password is changed, all administrator sessions will be revoked and you must sign in again with the new password.','当前密码':'Current password','新密码':'New password','确认新密码':'Confirm new password','修改密码':'Change password','请求总数':'Total Requests','成功请求':'Successful Requests','失败请求':'Failed Requests','活跃请求':'Active Requests','成功率':'Success Rate','平均延迟':'Average Latency','最近请求':'Recent Requests','时间':'Time','模型':'Model','耗时':'Latency','Token':'Tokens','账号管理':'Account Management','一键测活':'Check All','刷新':'Refresh','名称':'Name','会话上限':'Session Limit','添加账号':'Add Account','状态':'Status','请求':'Requests','会话用量':'Session Usage','操作':'Actions','批量导入（每行一个 Session Key 或 Cookie）':'Bulk Import (one Session Key or Cookie per line)','导入':'Import','代理配置':'Proxy Configuration','启用上游代理':'Enable upstream proxy','代理 URL 模板':'Proxy URL Template','保存代理配置':'Save Proxy Configuration','全局限速':'Global Rate Limit','启用限速':'Enable rate limiting','每分钟请求数':'Requests per Minute','突发容量':'Burst Capacity','保存限速配置':'Save Rate Limit Configuration','账号自动保活':'Automatic Account Keep Alive','启用账号自动刷新保活':'Enable automatic account refresh and keep alive','检查间隔（分钟）':'Check Interval (minutes)','单账号超时（秒）':'Per-account Timeout (seconds)','保存保活配置':'Save Keep Alive Configuration','API Key 管理':'API Key Management','Key 名称':'Key Name','创建 API Key':'Create API Key','前缀':'Prefix','最后使用':'Last Used','退出登录':'Log out','暂无账号':'No accounts','暂无 API Key':'No API keys','暂无最近请求':'No recent requests','未设置':'Not set','启用':'Enable','停用':'Disable','恢复限速':'Restore Rate Limit','删除':'Delete','从未':'Never'};
-    let language=localStorage.getItem('admin-language')||'zh',theme=localStorage.getItem('admin-theme')||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');
-    function translateStaticText(){const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);const nodes=[];while(walker.nextNode())nodes.push(walker.currentNode);nodes.forEach(node=>{if(node.parentElement?.closest('script,style,[data-i18n]'))return;if(node._zhText===undefined)node._zhText=node.nodeValue;const original=node._zhText;const trimmed=original.trim();if(!trimmed)return;const translated=language==='en'?(zhToEn[trimmed]||trimmed):trimmed;node.nodeValue=original.replace(trimmed,translated)});document.querySelectorAll('input[placeholder]').forEach(input=>{if(input.dataset.zhPlaceholder===undefined)input.dataset.zhPlaceholder=input.placeholder;input.placeholder=language==='en'?(zhToEn[input.dataset.zhPlaceholder]||input.dataset.zhPlaceholder):input.dataset.zhPlaceholder})}
-    function applyPreferences(){document.documentElement.lang=language==='zh'?'zh-CN':'en';document.documentElement.dataset.theme=theme;document.title=translations[language].consoleTitle;document.querySelectorAll('[data-i18n]').forEach(node=>node.textContent=translations[language][node.dataset.i18n]);translateStaticText();$('languageButton').textContent=translations[language].language;$('themeButton').textContent=translations[language][theme==='dark'?'light':'dark'];localStorage.setItem('admin-language',language);localStorage.setItem('admin-theme',theme)}
-    $('languageButton').onclick=()=>{language=language==='zh'?'en':'zh';applyPreferences()};$('themeButton').onclick=()=>{theme=theme==='dark'?'light':'dark';applyPreferences()};applyPreferences();
-    function showLogin(message=''){$('loginError').textContent=message;loginView.classList.remove('hidden');consoleView.classList.add('hidden')}
-    function showConsole(){loginView.classList.add('hidden');consoleView.classList.remove('hidden')}
-    function notify(message){$('message').textContent=message;$('message').classList.remove('hidden');setTimeout(()=>$('message').classList.add('hidden'),3000)}
-    async function api(path,options={}){const response=await fetch('/admin/api'+path,{credentials:'same-origin',headers:{'Content-Type':'application/json',...(options.headers||{})},...options});if(response.status===401){showLogin('登录已过期，请重新登录。');throw new Error('unauthorized')}if(!response.ok){let message='请求失败';try{message=(await response.json()).error?.message||message}catch{}throw new Error(message)}return response.status===204?null:response.json()}
-    function text(value){const node=document.createElement('div');node.textContent=String(value??'');return node.innerHTML}
-    let accountItems=[],accountFilter='all';
-    function accountKind(a){const status=String(a.status||'').toLowerCase();if(status.includes('ban')||status.includes('block'))return'blocked';if(a.enabled===false)return'disabled';return accountCooldownRemaining(a)>0?'cooldown':'active'}
-    function accountCooldownRemaining(a){const deadline=Date.parse(a.cooldown_until||'');return Number.isFinite(deadline)?Math.max(0,Math.ceil((deadline-Date.now())/1000)):0}
-    function formatCooldown(a){const seconds=accountCooldownRemaining(a);if(seconds<=0)return'';const minutes=Math.floor(seconds/60),rest=seconds%60;return minutes>0?`${minutes}分${String(rest).padStart(2,'0')}秒`:`${rest}秒`}
-    function maskedSession(a){const value=String(a.session_key||a.sessionKey||'');return value.length>13?value.slice(0,7)+'...'+value.slice(-6):value||'未设置'}
-    function renderAccounts(accounts){accountItems=accounts;const query=($('accountSearch')?.value||'').trim().toLowerCase();const visible=accounts.filter(a=>(accountFilter==='all'||accountKind(a)===accountFilter)&&(!query||String(a.name||'').toLowerCase().includes(query)||String(a.session_key||'').toLowerCase().includes(query)));$('accountTotal').textContent=accounts.length;$('accountActive').textContent=accounts.filter(a=>accountKind(a)==='active').length;$('accountCooldown').textContent=accounts.filter(a=>accountKind(a)==='cooldown').length;$('accountDisabled').textContent=accounts.filter(a=>accountKind(a)==='disabled').length;$('accountBlocked').textContent=accounts.filter(a=>accountKind(a)==='blocked').length;$('accountsBody').innerHTML=visible.length?visible.map(a=>{const kind=accountKind(a),requests=a.request_count||0,failures=a.failure_count||a.failed_count||0,successes=a.success_count??Math.max(0,requests-failures),stateText=kind==='active'?'活跃':kind==='cooldown'?`冷却中 ${formatCooldown(a)}`:kind==='blocked'?'封禁':'停用';return`<tr><td><span class="account-state ${kind}">${stateText}</span></td><td>${text(a.name||'未命名')}</td><td><span class="session-value" title="${text(a.session_key||'')}">${text(maskedSession(a))}</span></td><td>${a.session_used||0}</td><td>${a.session_limit||'global'}</td><td>${requests}</td><td class="ok-count">${successes}</td><td class="fail-count">${failures}</td><td><div class="row-actions"><button class="primary" onclick="toggleAccount('${a.id}',${!a.enabled})">${a.enabled?'停用':'启用'}</button><button class="secondary" onclick="restoreAccount('${a.id}')">恢复</button><button class="danger" onclick="deleteAccount('${a.id}')">删除</button></div></td></tr>`}).join(''):'<tr><td class="empty" colspan="9">暂无账号</td></tr>'}
-    function renderKeys(keys){$('keysBody').innerHTML=keys.length?keys.map(k=>`<tr><td>${text(k.name)}</td><td>${text(k.key_prefix)}...</td><td>${k.enabled?'启用':'停用'}</td><td>${k.last_used_at?new Date(k.last_used_at).toLocaleString():'从未'}</td><td><button class="secondary" onclick="toggleKey('${k.id}',${!k.enabled})">${k.enabled?'停用':'启用'}</button> <button class="danger" onclick="deleteKey('${k.id}')">删除</button></td></tr>`).join(''):'<tr><td class="empty" colspan="5">暂无 API Key</td></tr>'}
-    function renderRecentRequests(items){$('recentRequestsBody').innerHTML=items.length?items.map(item=>{const status=Number(item.status||0),success=item.success===true;const input=Number(item.input_tokens||0),output=Number(item.output_tokens||0);return`<tr><td>${new Date(item.time).toLocaleString()}</td><td><span class="request-model">${text(item.model||'未设置')}</span></td><td>${text(item.account||item.account_id||'未设置')}</td><td><span class="request-status ${success?'':'failed'}">${success?'成功':'失败'} · ${status}</span></td><td>${Number(item.latency_ms||0)} ms</td><td><span class="request-token">输入 ${input} / 输出 ${output}</span></td></tr>`}).join(''):'<tr><td class="recent-empty" colspan="6">暂无最近请求</td></tr>'}
-    async function loadConsole(){const [state,metrics,recent]=await Promise.all([api('/state'),api('/metrics'),api('/recent-requests')]);$('requests').textContent=metrics.requests||0;$('successes').textContent=metrics.successes||0;$('failures').textContent=metrics.failures||0;$('activeRequests').textContent=metrics.active_requests||0;$('successRate').textContent=(metrics.success_rate||0).toFixed(1)+'%';$('latency').textContent=(metrics.average_latency_ms||0).toFixed(1)+' ms';renderAccounts(state.accounts||[]);renderKeys(state.api_keys||[]);const masterKey=state.master_key||{};$('masterKeyEnabled').checked=masterKey.enabled===true;$('masterKeyStatus').textContent=masterKey.key_prefix?`当前总 Key：${masterKey.key_prefix}... · ${masterKey.enabled?'已启用':'已停用'} · 最后使用：${masterKey.last_used_at?new Date(masterKey.last_used_at).toLocaleString():'从未'}`:'尚未设置总 Key';$('proxyEnabled').checked=state.proxy.enabled;$('proxyUrl').value=state.proxy.url_template||'';$('rateEnabled').checked=state.rate_limit.enabled;$('rpm').value=state.rate_limit.requests_per_minute||60;$('burst').value=state.rate_limit.burst||10;$('keepAliveEnabled').checked=state.keep_alive.enabled;$('keepAliveInterval').value=state.keep_alive.interval_minutes||10;$('keepAliveTimeout').value=state.keep_alive.timeout_seconds||15;renderRecentRequests(recent.recent_requests||[]);applyPreferences();showConsole()}
-    document.querySelectorAll('.tab').forEach(button=>button.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x===button));document.querySelectorAll('.page').forEach(x=>x.classList.toggle('hidden',x.id!==button.dataset.page))});
-    $('loginForm').onsubmit=async event=>{event.preventDefault();$('loginButton').disabled=true;try{await api('/login',{method:'POST',body:JSON.stringify({password:$('password').value})});$('password').value='';await loadConsole()}catch(error){if(error.message!=='unauthorized')$('loginError').textContent=error.message}finally{$('loginButton').disabled=false}};
-    $('logoutButton').onclick=async()=>{try{await api('/logout',{method:'POST'})}finally{showLogin()}};
-    $('changePasswordForm').onsubmit=async event=>{event.preventDefault();const currentPassword=$('currentPassword').value,newPassword=$('newPassword').value,confirmPassword=$('confirmPassword').value,error=$('changePasswordError'),button=$('changePasswordButton');error.textContent='';if(newPassword!==confirmPassword){error.textContent=language==='en'?'The new passwords do not match.':'两次输入的新密码不一致。';return}if(newPassword===currentPassword){error.textContent=language==='en'?'The new password must differ from the current password.':'新密码不能与当前密码相同。';return}button.disabled=true;try{await api('/password',{method:'PUT',body:JSON.stringify({current_password:currentPassword,new_password:newPassword})});event.target.reset();showLogin(language==='en'?'Password changed. Sign in with your new password.':'密码修改成功，请使用新密码重新登录。')}catch(e){if(e.message!=='unauthorized')error.textContent=e.message}finally{button.disabled=false}};
-    $('accountForm').onsubmit=async event=>{event.preventDefault();try{await api('/accounts',{method:'POST',body:JSON.stringify({name:$('accountName').value,session_key:$('sessionKey').value,session_limit:Number($('sessionLimit').value)})});event.target.reset();await loadConsole();notify('账号已添加')}catch(e){notify(e.message)}};
-    $('importForm').onsubmit=async event=>{event.preventDefault();try{const result=await api('/accounts/import',{method:'POST',body:JSON.stringify({content:$('importContent').value})});$('importContent').value='';await loadConsole();notify(`导入 ${result.imported} 个，跳过 ${result.skipped} 个`)}catch(e){notify(e.message)}};
-    window.toggleAccount=async(id,enabled)=>{try{await api('/accounts/'+id+'/status',{method:'PATCH',body:JSON.stringify({enabled})});await loadConsole()}catch(e){notify(e.message)}};window.restoreAccount=async id=>{try{await api('/accounts/'+id+'/restore',{method:'POST'});await loadConsole();notify('账号限速状态已恢复')}catch(e){notify(e.message)}};window.deleteAccount=async id=>{if(confirm('确定删除此账号？'))try{await api('/accounts/'+id,{method:'DELETE'});await loadConsole()}catch(e){notify(e.message)}};
-    $('proxyForm').onsubmit=async event=>{event.preventDefault();try{await api('/proxy',{method:'PUT',body:JSON.stringify({enabled:$('proxyEnabled').checked,url_template:$('proxyUrl').value})});notify('代理配置已保存')}catch(e){notify(e.message)}};
-    $('rateForm').onsubmit=async event=>{event.preventDefault();try{await api('/rate-limit',{method:'PUT',body:JSON.stringify({enabled:$('rateEnabled').checked,requests_per_minute:Number($('rpm').value),burst:Number($('burst').value)})});notify('限速配置已保存并已在运行时生效')}catch(e){notify(e.message)}};
-    $('keepAliveForm').onsubmit=async event=>{event.preventDefault();try{await api('/keep-alive',{method:'PUT',body:JSON.stringify({enabled:$('keepAliveEnabled').checked,interval_minutes:Number($('keepAliveInterval').value),timeout_seconds:Number($('keepAliveTimeout').value)})});notify('保活配置已保存并已在运行时生效')}catch(e){notify(e.message)}};
-    $('masterKeyForm').onsubmit=async event=>{event.preventDefault();try{await api('/master-key',{method:'PUT',body:JSON.stringify({key:$('masterKeyValue').value,enabled:$('masterKeyEnabled').checked})});$('masterKeyValue').value='';await loadConsole();notify('总 Key 配置已保存并立即生效')}catch(e){notify(e.message)}};$('deleteMasterKey').onclick=async()=>{if(!confirm('确定删除总 Key？删除后将立即失效。'))return;try{await api('/master-key',{method:'DELETE'});$('masterKeyValue').value='';await loadConsole();notify('总 Key 已删除')}catch(e){notify(e.message)}};
-    $('keyForm').onsubmit=async event=>{event.preventDefault();try{const result=await api('/api-keys',{method:'POST',body:JSON.stringify({name:$('keyName').value})});$('keyName').value='';$('newKey').textContent='请立即复制并妥善保存，此 Key 仅显示一次：'+result.key;$('newKey').classList.remove('hidden');await loadConsole()}catch(e){notify(e.message)}};
-    window.toggleKey=async(id,enabled)=>{try{await api('/api-keys/'+id,{method:'PUT',body:JSON.stringify({enabled})});await loadConsole()}catch(e){notify(e.message)}};window.deleteKey=async id=>{if(confirm('确定删除此 API Key？'))try{await api('/api-keys/'+id,{method:'DELETE'});await loadConsole()}catch(e){notify(e.message)}};
-    $('showAccountForm').onclick=()=>{$('accountForm').classList.toggle('hidden');$('importForm').classList.add('hidden')};$('showImportForm').onclick=()=>{$('importForm').classList.toggle('hidden');$('accountForm').classList.add('hidden')};$('accountSearch').oninput=()=>renderAccounts(accountItems);document.querySelectorAll('.account-filter').forEach(button=>button.onclick=()=>{accountFilter=button.dataset.accountFilter;document.querySelectorAll('.account-filter').forEach(x=>x.classList.toggle('active',x===button));renderAccounts(accountItems)});$('restoreAllAccounts').onclick=async()=>{const button=$('restoreAllAccounts');button.disabled=true;try{const result=await api('/accounts/restore',{method:'POST'});await loadConsole();notify(`已恢复 ${result.restored} 个账号的限速状态`)}catch(e){notify(e.message)}finally{button.disabled=false}};$('deleteBlockedAccounts').onclick=async()=>{const targets=accountItems.filter(a=>accountKind(a)==='blocked');if(!targets.length)return notify('没有封禁账号');if(!confirm(`确定删除 ${targets.length} 个封禁账号？`))return;const button=$('deleteBlockedAccounts');button.disabled=true;try{const result=await api('/accounts/blocked',{method:'DELETE'});await loadConsole();notify(`已删除 ${result.deleted} 个封禁账号`)}catch(e){notify(e.message)}finally{button.disabled=false}};$('checkAccounts').onclick=async()=>{const button=$('checkAccounts');button.disabled=true;try{const result=await api('/accounts/check',{method:'POST'});await loadConsole();notify(`测活完成：${result.healthy} 个正常，${result.unhealthy} 个异常`)}catch(e){notify(e.message)}finally{button.disabled=false}};$('refreshAccounts').onclick=loadConsole;loadConsole().catch(error=>{if(error.message!=='unauthorized')showLogin()});setInterval(()=>{if(!consoleView.classList.contains('hidden'))loadConsole().catch(()=>{})},15000);
-  </script>
+  </div>
+
+</section>
+
+<script>
+  const $=id=>document.getElementById(id),loginView=$('loginView'),consoleView=$('consoleView');
+  const translations={zh:{consoleTitle:'Claude2API 管理控制台',logout:'退出登录',language:'English',light:'浅色',dark:'深色'},en:{consoleTitle:'Claude2API Admin Console',logout:'Log out',language:'中文',light:'Light',dark:'Dark'}};
+  const zhToEn={'管理控制台':'Admin Console','使用管理员密码登录 Claude2API。':'Sign in to Claude2API with the administrator password.','管理员密码':'Administrator password','登录':'Sign in','统计':'Statistics','账号':'Accounts','代理':'Proxy','限速':'Rate Limit','保活':'Keep Alive','安全':'Security','修改管理员密码':'Change administrator password','密码修改成功后，所有管理会话将失效，需要使用新密码重新登录。':'After the password is changed, all administrator sessions will be revoked and you must sign in again with the new password.','当前密码':'Current password','新密码':'New password','确认新密码':'Confirm new password','修改密码':'Change password','请求总数':'Total Requests','成功请求':'Successful Requests','失败请求':'Failed Requests','活跃请求':'Active Requests','成功率':'Success Rate','平均延迟':'Average Latency','最近请求':'Recent Requests','时间':'Time','模型':'Model','耗时':'Latency','Token':'Tokens','账号管理':'Account Management','一键测活':'Check All','刷新':'Refresh','名称':'Name','会话上限':'Session Limit','添加账号':'Add Account','状态':'Status','请求':'Requests','会话用量':'Session Usage','操作':'Actions','批量导入（每行一个 Session Key 或 Cookie）':'Bulk Import (one Session Key or Cookie per line)','导入':'Import','代理配置':'Proxy Configuration','启用上游代理':'Enable upstream proxy','代理 URL 模板':'Proxy URL Template','保存代理配置':'Save Proxy Configuration','全局限速':'Global Rate Limit','启用限速':'Enable rate limiting','每分钟请求数':'Requests per Minute','突发容量':'Burst Capacity','保存限速配置':'Save Rate Limit Configuration','账号自动保活':'Automatic Account Keep Alive','启用账号自动刷新保活':'Enable automatic account refresh and keep alive','检查间隔（分钟）':'Check Interval (minutes)','单账号超时（秒）':'Per-account Timeout (seconds)','保存保活配置':'Save Keep Alive Configuration','API Key 管理':'API Key Management','Key 名称':'Key Name','创建 API Key':'Create API Key','前缀':'Prefix','最后使用':'Last Used','退出登录':'Log out','暂无账号':'No accounts','暂无 API Key':'No API keys','暂无最近请求':'No recent requests','未设置':'Not set','启用':'Enable','停用':'Disable','恢复限速':'Restore Rate Limit','删除':'Delete','从未':'Never'};
+  let language=localStorage.getItem('admin-language')||'zh',theme=localStorage.getItem('admin-theme')||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');
+  function translateStaticText(){const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);const nodes=[];while(walker.nextNode())nodes.push(walker.currentNode);nodes.forEach(node=>{if(node.parentElement?.closest('script,style,[data-i18n]'))return;if(node._zhText===undefined)node._zhText=node.nodeValue;const original=node._zhText;const trimmed=original.trim();if(!trimmed)return;const translated=language==='en'?(zhToEn[trimmed]||trimmed):trimmed;node.nodeValue=original.replace(trimmed,translated)});document.querySelectorAll('input[placeholder]').forEach(input=>{if(input.dataset.zhPlaceholder===undefined)input.dataset.zhPlaceholder=input.placeholder;input.placeholder=language==='en'?(zhToEn[input.dataset.zhPlaceholder]||input.dataset.zhPlaceholder):input.dataset.zhPlaceholder})}
+  function applyPreferences(){document.documentElement.lang=language==='zh'?'zh-CN':'en';document.documentElement.dataset.theme=theme;document.title=translations[language].consoleTitle;document.querySelectorAll('[data-i18n]').forEach(node=>node.textContent=translations[language][node.dataset.i18n]);translateStaticText();$('languageButton').querySelector('span:last-child').textContent=translations[language].language;const themeSpan=$('themeButton').querySelector('span:last-child');themeSpan.textContent=translations[language][theme==='dark'?'light':'dark'];$('themeButton').querySelector('.nav-icon').textContent=theme==='dark'?'☀️':'🌙';localStorage.setItem('admin-language',language);localStorage.setItem('admin-theme',theme)}
+  $('languageButton').onclick=()=>{language=language==='zh'?'en':'zh';applyPreferences()};$('themeButton').onclick=()=>{theme=theme==='dark'?'light':'dark';applyPreferences()};applyPreferences();
+  function showLogin(message=''){$('loginError').textContent=message;loginView.classList.remove('hidden');consoleView.classList.add('hidden')}
+  function showConsole(){loginView.classList.add('hidden');consoleView.classList.remove('hidden')}
+  function notify(message){$('message').textContent=message;$('message').classList.remove('hidden');setTimeout(()=>$('message').classList.add('hidden'),3000)}
+  async function api(path,options={}){const response=await fetch('/admin/api'+path,{credentials:'same-origin',headers:{'Content-Type':'application/json',...(options.headers||{})},...options});if(response.status===401){showLogin('登录已过期，请重新登录。');throw new Error('unauthorized')}if(!response.ok){let message='请求失败';try{message=(await response.json()).error?.message||message}catch{}throw new Error(message)}return response.status===204?null:response.json()}
+  function text(value){const node=document.createElement('div');node.textContent=String(value??'');return node.innerHTML}
+  let accountItems=[],accountFilter='all';
+  function accountKind(a){const status=String(a.status||'').toLowerCase();if(status.includes('ban')||status.includes('block'))return'blocked';if(a.enabled===false)return'disabled';return accountCooldownRemaining(a)>0?'cooldown':'active'}
+  function accountCooldownRemaining(a){const deadline=Date.parse(a.cooldown_until||'');return Number.isFinite(deadline)?Math.max(0,Math.ceil((deadline-Date.now())/1000)):0}
+  function formatCooldown(a){const seconds=accountCooldownRemaining(a);if(seconds<=0)return'';const minutes=Math.floor(seconds/60),rest=seconds%60;return minutes>0?`${minutes}分${String(rest).padStart(2,'0')}秒`:`${rest}秒`}
+  function maskedSession(a){const value=String(a.session_key||a.sessionKey||'');return value.length>13?value.slice(0,7)+'...'+value.slice(-6):value||'未设置'}
+  function renderAccounts(accounts){accountItems=accounts;const query=($('accountSearch')?.value||'').trim().toLowerCase();const visible=accounts.filter(a=>(accountFilter==='all'||accountKind(a)===accountFilter)&&(!query||String(a.name||'').toLowerCase().includes(query)||String(a.session_key||'').toLowerCase().includes(query)));$('accountTotal').textContent=accounts.length;$('accountActive').textContent=accounts.filter(a=>accountKind(a)==='active').length;$('accountCooldown').textContent=accounts.filter(a=>accountKind(a)==='cooldown').length;$('accountDisabled').textContent=accounts.filter(a=>accountKind(a)==='disabled').length;$('accountBlocked').textContent=accounts.filter(a=>accountKind(a)==='blocked').length;$('accountsBody').innerHTML=visible.length?visible.map(a=>{const kind=accountKind(a),requests=a.request_count||0,failures=a.failure_count||a.failed_count||0,successes=a.success_count??Math.max(0,requests-failures),stateText=kind==='active'?'活跃':kind==='cooldown'?`冷却中 ${formatCooldown(a)}`:kind==='blocked'?'封禁':'停用';return`<tr><td><span class="account-state ${kind}">${stateText}</span></td><td>${text(a.name||'未命名')}</td><td><span class="session-value" title="${text(a.session_key||'')}">${text(maskedSession(a))}</span></td><td>${a.session_used||0}</td><td>${a.session_limit||'global'}</td><td>${requests}</td><td class="ok-count">${successes}</td><td class="fail-count">${failures}</td><td><div class="row-actions"><button class="primary" onclick="toggleAccount('${a.id}',${!a.enabled})">${a.enabled?'停用':'启用'}</button><button class="secondary" onclick="restoreAccount('${a.id}')">恢复</button><button class="danger" onclick="deleteAccount('${a.id}')">删除</button></div></td></tr>`}).join(''):'<tr><td class="empty" colspan="9">暂无账号</td></tr>'}
+  function renderKeys(keys){$('keysBody').innerHTML=keys.length?keys.map(k=>`<tr><td>${text(k.name)}</td><td>${text(k.key_prefix)}...</td><td>${k.enabled?'启用':'停用'}</td><td>${k.last_used_at?new Date(k.last_used_at).toLocaleString():'从未'}</td><td><button class="secondary" onclick="toggleKey('${k.id}',${!k.enabled})">${k.enabled?'停用':'启用'}</button> <button class="danger" onclick="deleteKey('${k.id}')">删除</button></td></tr>`).join(''):'<tr><td class="empty" colspan="5">暂无 API Key</td></tr>'}
+  function renderRecentRequests(items){$('recentRequestsBody').innerHTML=items.length?items.map(item=>{const status=Number(item.status||0),success=item.success===true;const input=Number(item.input_tokens||0),output=Number(item.output_tokens||0);return`<tr><td>${new Date(item.time).toLocaleString()}</td><td><span class="request-model">${text(item.model||'未设置')}</span></td><td>${text(item.account||item.account_id||'未设置')}</td><td><span class="request-status ${success?'':'failed'}">${success?'成功':'失败'} · ${status}</span></td><td>${Number(item.latency_ms||0)} ms</td><td><span class="request-token">输入 ${input} / 输出 ${output}</span></td></tr>`}).join(''):'<tr><td class="recent-empty" colspan="6">暂无最近请求</td></tr>'}
+  function renderModelMaps(mappings){$('modelMapsBody').innerHTML=mappings.length?mappings.map(m=>`<tr><td><code>${text(m.from)}</code></td><td><code>${text(m.to)}</code></td><td>${m.enabled?'启用':'停用'}</td><td><div class="row-actions"><button class="secondary" onclick="toggleModelMap('${m.id}',${!m.enabled})">${m.enabled?'停用':'启用'}</button><button class="danger" onclick="deleteModelMap('${m.id}')">删除</button></div></td></tr>`).join(''):'<tr><td class="empty" colspan="4">暂无模型映射</td></tr>'}
+  async function loadConsole(){const [state,metrics,recent]=await Promise.all([api('/state'),api('/metrics'),api('/recent-requests')]);$('requests').textContent=metrics.requests||0;$('successes').textContent=metrics.successes||0;$('failures').textContent=metrics.failures||0;$('activeRequests').textContent=metrics.active_requests||0;$('successRate').textContent=(metrics.success_rate||0).toFixed(1)+'%';$('latency').textContent=(metrics.average_latency_ms||0).toFixed(1)+' ms';renderAccounts(state.accounts||[]);renderKeys(state.api_keys||[]);renderModelMaps(state.model_mappings||[]);$('proxyEnabled').checked=state.proxy.enabled;$('proxyUrl').value=state.proxy.url_template||'';$('rateEnabled').checked=state.rate_limit.enabled;$('rpm').value=state.rate_limit.requests_per_minute||60;$('burst').value=state.rate_limit.burst||10;$('keepAliveEnabled').checked=state.keep_alive.enabled;$('keepAliveInterval').value=state.keep_alive.interval_minutes||10;$('keepAliveTimeout').value=state.keep_alive.timeout_seconds||15;renderRecentRequests(recent.recent_requests||[]);applyPreferences();showConsole()}
+  document.querySelectorAll('.tab').forEach(button=>button.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x===button));document.querySelectorAll('.page').forEach(x=>x.classList.toggle('hidden',x.id!==button.dataset.page))});
+  $('loginForm').onsubmit=async event=>{event.preventDefault();$('loginButton').disabled=true;try{await api('/login',{method:'POST',body:JSON.stringify({password:$('password').value})});$('password').value='';await loadConsole()}catch(error){if(error.message!=='unauthorized')$('loginError').textContent=error.message}finally{$('loginButton').disabled=false}};
+  $('logoutButton').onclick=async()=>{try{await api('/logout',{method:'POST'})}finally{showLogin()}};
+  $('changePasswordForm').onsubmit=async event=>{event.preventDefault();const currentPassword=$('currentPassword').value,newPassword=$('newPassword').value,confirmPassword=$('confirmPassword').value,error=$('changePasswordError'),button=$('changePasswordButton');error.textContent='';if(newPassword!==confirmPassword){error.textContent=language==='en'?'The new passwords do not match.':'两次输入的新密码不一致。';return}if(newPassword===currentPassword){error.textContent=language==='en'?'The new password must differ from the current password.':'新密码不能与当前密码相同。';return}button.disabled=true;try{await api('/password',{method:'PUT',body:JSON.stringify({current_password:currentPassword,new_password:newPassword})});event.target.reset();showLogin(language==='en'?'Password changed. Sign in with your new password.':'密码修改成功，请使用新密码重新登录。')}catch(e){if(e.message!=='unauthorized')error.textContent=e.message}finally{button.disabled=false}};
+  $('accountForm').onsubmit=async event=>{event.preventDefault();try{await api('/accounts',{method:'POST',body:JSON.stringify({name:$('accountName').value.trim()||undefined,session_key:$('sessionKey').value,session_limit:Number($('sessionLimit').value)})});event.target.reset();await loadConsole();notify('账号已添加')}catch(e){notify(e.message)}};
+  $('importForm').onsubmit=async event=>{event.preventDefault();try{const result=await api('/accounts/import',{method:'POST',body:JSON.stringify({content:$('importContent').value})});$('importContent').value='';await loadConsole();notify(`导入 ${result.imported} 个，跳过 ${result.skipped} 个`)}catch(e){notify(e.message)}};
+  window.toggleAccount=async(id,enabled)=>{try{await api('/accounts/'+id+'/status',{method:'PATCH',body:JSON.stringify({enabled})});await loadConsole()}catch(e){notify(e.message)}};window.restoreAccount=async id=>{try{await api('/accounts/'+id+'/restore',{method:'POST'});await loadConsole();notify('账号限速状态已恢复')}catch(e){notify(e.message)}};window.deleteAccount=async id=>{if(confirm('确定删除此账号？'))try{await api('/accounts/'+id,{method:'DELETE'});await loadConsole()}catch(e){notify(e.message)}};
+  $('proxyForm').onsubmit=async event=>{event.preventDefault();try{await api('/proxy',{method:'PUT',body:JSON.stringify({enabled:$('proxyEnabled').checked,url_template:$('proxyUrl').value})});notify('代理配置已保存')}catch(e){notify(e.message)}};
+  $('rateForm').onsubmit=async event=>{event.preventDefault();try{await api('/rate-limit',{method:'PUT',body:JSON.stringify({enabled:$('rateEnabled').checked,requests_per_minute:Number($('rpm').value),burst:Number($('burst').value)})});notify('限速配置已保存并已在运行时生效')}catch(e){notify(e.message)}};
+  $('keepAliveForm').onsubmit=async event=>{event.preventDefault();try{await api('/keep-alive',{method:'PUT',body:JSON.stringify({enabled:$('keepAliveEnabled').checked,interval_minutes:Number($('keepAliveInterval').value),timeout_seconds:Number($('keepAliveTimeout').value)})});notify('保活配置已保存并已在运行时生效')}catch(e){notify(e.message)}};
+  $('keyForm').onsubmit=async event=>{event.preventDefault();try{const result=await api('/api-keys',{method:'POST',body:JSON.stringify({name:$('keyName').value})});$('keyName').value='';$('newKey').textContent='请立即复制并妥善保存，此 Key 仅显示一次：'+result.key;$('newKey').classList.remove('hidden');await loadConsole()}catch(e){notify(e.message)}};
+  window.toggleKey=async(id,enabled)=>{try{await api('/api-keys/'+id,{method:'PUT',body:JSON.stringify({enabled})});await loadConsole()}catch(e){notify(e.message)}};window.deleteKey=async id=>{if(confirm('确定删除此 API Key？'))try{await api('/api-keys/'+id,{method:'DELETE'});await loadConsole()}catch(e){notify(e.message)}};
+  $('showAccountForm').onclick=()=>{$('accountForm').classList.toggle('hidden');$('importForm').classList.add('hidden')};$('showImportForm').onclick=()=>{$('importForm').classList.toggle('hidden');$('accountForm').classList.add('hidden')};$('accountSearch').oninput=()=>renderAccounts(accountItems);document.querySelectorAll('.account-filter').forEach(button=>button.onclick=()=>{accountFilter=button.dataset.accountFilter;document.querySelectorAll('.account-filter').forEach(x=>x.classList.toggle('active',x===button));renderAccounts(accountItems)});$('restoreAllAccounts').onclick=async()=>{const button=$('restoreAllAccounts');button.disabled=true;try{const result=await api('/accounts/restore',{method:'POST'});await loadConsole();notify(`已恢复 ${result.restored} 个账号的限速状态`)}catch(e){notify(e.message)}finally{button.disabled=false}};$('deleteBlockedAccounts').onclick=async()=>{const targets=accountItems.filter(a=>accountKind(a)==='blocked');if(!targets.length)return notify('没有封禁账号');if(!confirm(`确定删除 ${targets.length} 个封禁账号？`))return;const button=$('deleteBlockedAccounts');button.disabled=true;try{const result=await api('/accounts/blocked',{method:'DELETE'});await loadConsole();notify(`已删除 ${result.deleted} 个封禁账号`)}catch(e){notify(e.message)}finally{button.disabled=false}};$('checkAccounts').onclick=async()=>{const button=$('checkAccounts');button.disabled=true;try{const result=await api('/accounts/check',{method:'POST'});await loadConsole();notify(`测活完成：${result.healthy} 个正常，${result.unhealthy} 个异常`)}catch(e){notify(e.message)}finally{button.disabled=false}};$('refreshAccounts').onclick=loadConsole;
+  $('showModelMapForm').onclick=()=>{$('modelMapForm').classList.toggle('hidden');if(!$('modelMapForm').classList.contains('hidden')){$('mapFrom').focus()}};$('cancelModelMapForm').onclick=()=>$('modelMapForm').classList.add('hidden');$('refreshModelMaps').onclick=loadConsole;$('modelMapForm').onsubmit=async event=>{event.preventDefault();try{await api('/model-mappings',{method:'POST',body:JSON.stringify({from:$('mapFrom').value.trim(),to:$('mapTo').value.trim()})});event.target.reset();$('modelMapForm').classList.add('hidden');await loadConsole();notify('模型映射已添加')}catch(e){notify(e.message)}};window.toggleModelMap=async(id,enabled)=>{try{await api('/model-mappings/'+id,{method:'PUT',body:JSON.stringify({enabled})});await loadConsole()}catch(e){notify(e.message)}};window.deleteModelMap=async id=>{if(confirm('确定删除此模型映射？'))try{await api('/model-mappings/'+id,{method:'DELETE'});await loadConsole();notify('模型映射已删除')}catch(e){notify(e.message)}};
+  loadConsole().catch(error=>{if(error.message!=='unauthorized')showLogin()});setInterval(()=>{if(!consoleView.classList.contains('hidden'))loadConsole().catch(()=>{})},15000);
+</script>
 </body>
 </html>

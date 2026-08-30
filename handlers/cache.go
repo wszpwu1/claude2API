@@ -1,8 +1,6 @@
 package handlers
 
 import (
-	"crypto/sha1"
-	"encoding/hex"
 	"sync"
 	"time"
 
@@ -123,29 +121,4 @@ func estimateTokens(m map[string]interface{}) int {
 		tokens = 1
 	}
 	return tokens
-}
-
-// hashFP is an unused helper kept for potential future per-user namespacing.
-func hashFP(s string) string {
-	h := sha1.Sum([]byte(s))
-	return hex.EncodeToString(h[:])
-}
-
-// ensureCacheControl makes sure a text block carries a cache_control marker
-
-// ensureCacheControl makes sure a text block carries a cache_control marker
-// when the original request used caching. Used when echoing blocks back.
-func ensureCacheControl(original, rendered map[string]interface{}) {
-	if original == nil {
-		return
-	}
-	if cc, ok := original["cache_control"]; ok {
-		rendered["cache_control"] = cc
-	}
-}
-
-// isCacheable reports whether a raw content block has cache_control set.
-func isCacheable(m map[string]interface{}) bool {
-	_, ok := m["cache_control"]
-	return ok
 }

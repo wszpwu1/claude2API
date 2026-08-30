@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"claude2api/claude"
@@ -23,6 +24,12 @@ type Handler struct {
 	conversations *conversationStore
 	clients       *clientPool
 	deleteSlots   chan struct{}
+
+	// customModelsMu guards customModels for concurrent hot-reload.
+	customModelsMu sync.RWMutex
+	// customModels maps incoming model aliases to their target Claude model name.
+	// Keys and values are stored in their original (non-lowercased) form.
+	customModels map[string]string
 }
 
 // NewHandler creates a handler.
@@ -36,6 +43,7 @@ func NewHandler(cfg *config.Config) *Handler {
 		conversations: newConversationStore(),
 		clients:       clients,
 		deleteSlots:   make(chan struct{}, 32),
+		customModels:  make(map[string]string),
 	}
 }
 
@@ -133,11 +141,37 @@ func (h *Handler) handleAccountError(accountID string, err error) {
 	}
 }
 
-// resolveModel returns the claude.ai model id for a requested model, or an error
-func resolveModel(requested, fallback string) (string, error) {
+// SetModelMappings replaces the runtime custom-model alias table atomically.
+// It is safe to call concurrently with in-flight requests.
+func (h *Handler) SetModelMappings(mappings map[string]string) {
+	h.customModelsMu.Lock()
+	defer h.customModelsMu.Unlock()
+	h.customModels = mappings
+}
+
+// resolveModel returns the claude.ai model id for a requested model, or an error.
+// Resolution order:
+//  1. Empty requested → use fallback.
+//  2. Custom alias table (managed via admin panel) — exact match first.
+//  3. Built-in SupportedModels table.
+func (h *Handler) resolveModel(requested, fallback string) (string, error) {
 	if requested == "" {
 		requested = fallback
 	}
+	// Check custom aliases first (exact match, case-sensitive).
+	h.customModelsMu.RLock()
+	if target, ok := h.customModels[requested]; ok {
+		h.customModelsMu.RUnlock()
+		// Resolve the alias target through the built-in table so callers
+		// always get back a validated claude.ai model identifier.
+		if m, ok2 := config.SupportedModels[target]; ok2 {
+			return m, nil
+		}
+		// The alias target is itself a supported model name.
+		return target, nil
+	}
+	h.customModelsMu.RUnlock()
+	// Fall through to built-in table.
 	m, ok := config.SupportedModels[requested]
 	if !ok {
 		return "", fmt.Errorf("model '%s' is not supported", requested)

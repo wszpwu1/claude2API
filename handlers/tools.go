@@ -19,9 +19,6 @@ import (
 	"github.com/bmatcuk/doublestar/v4"
 )
 
-// MaxToolRounds caps the tool-use loop so a misbehaving model cannot spin forever.
-const MaxToolRounds = 24
-
 // toolCall is a parsed [TOOL_CALL]...[/TOOL_CALL] instruction from the model text.
 type toolCall struct {
 	Name  string
@@ -34,29 +31,39 @@ var toolCallRe = regexp.MustCompile(`(?s)\[TOOL_CALL\]\s*(\{[\s\S]*?\})\s*\[/TOO
 
 // extractToolCalls parses all tool calls embedded in the model's text.
 // Returns the text stripped of tool-call markers, and the parsed calls.
+// A single pass over the string is used: match positions are collected,
+// the stripped output is assembled while iterating, and JSON is decoded
+// in-line — avoiding the redundant second regex scan of ReplaceAllString.
 func extractToolCalls(text string) (string, []toolCall) {
-	var calls []toolCall
-	matches := toolCallRe.FindAllStringSubmatch(text, -1)
-	if len(matches) == 0 {
+	indices := toolCallRe.FindAllStringSubmatchIndex(text, -1)
+	if len(indices) == 0 {
 		return text, nil
 	}
-	for _, m := range matches {
+	var calls []toolCall
+	var sb strings.Builder
+	prev := 0
+	for _, loc := range indices {
+		// Append the plain text that precedes this match.
+		sb.WriteString(text[prev:loc[0]])
+		prev = loc[1]
+
+		// loc[2]:loc[3] is capture group 1 — the raw JSON payload.
 		var raw map[string]interface{}
-		if err := json.Unmarshal([]byte(m[1]), &raw); err != nil {
+		if err := json.Unmarshal([]byte(text[loc[2]:loc[3]]), &raw); err != nil {
 			continue
 		}
 		name, _ := raw["name"].(string)
-		id, _ := raw["id"].(string)
 		if name == "" {
 			continue
 		}
+		id, _ := raw["id"].(string)
 		if id == "" {
 			id = fmt.Sprintf("toolu_%d", time.Now().UnixNano())
 		}
 		input, _ := raw["input"].(map[string]interface{})
 		if input == nil {
-			// allow flat args
-			input = map[string]interface{}{}
+			// Allow flat args when "input" key is absent.
+			input = make(map[string]interface{}, len(raw))
 			for k, v := range raw {
 				if k == "name" || k == "id" {
 					continue
@@ -64,26 +71,11 @@ func extractToolCalls(text string) (string, []toolCall) {
 				input[k] = v
 			}
 		}
-		calls = append(calls, toolCall{Name: name, ID: id, Input: input, Raw: m[0]})
+		calls = append(calls, toolCall{Name: name, ID: id, Input: input, Raw: text[loc[0]:loc[1]]})
 	}
-	stripped := toolCallRe.ReplaceAllString(text, "")
-	return stripped, calls
+	sb.WriteString(text[prev:])
+	return sb.String(), calls
 }
-
-// runTool executes a single tool call and returns Anthropic content blocks.
-func runTool(call toolCall) []models.AnthropicContentBlock {
-	out := executeTool(call.Name, call.Input)
-	return []models.AnthropicContentBlock{{
-		Type:    "text",
-		Text:    out,
-		ID:      call.ID,
-		Name:    call.Name,
-		Content: out,
-		IsError: boolPtr(false),
-	}}
-}
-
-func boolPtr(b bool) *bool { return &b }
 
 // openAIToolsToAnthropic converts OpenAI/New API function definitions into
 // Anthropic tool definitions while preserving their JSON Schemas.
