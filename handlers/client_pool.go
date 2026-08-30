@@ -216,16 +216,16 @@ func (p *clientPool) accountCooldowns(now time.Time) map[string]time.Time {
 }
 
 // accountStats returns a point-in-time snapshot of an account's runtime
-// counters: currently active leases and cumulative sessions used.
-func (p *clientPool) accountStats(accountID string) (active, sessionUsed int64, ok bool) {
+// counters: currently active leases, cumulative sessions used, and unhealthy flag.
+func (p *clientPool) accountStats(accountID string) (active, sessionUsed int64, unhealthy bool, ok bool) {
 	p.accountsMu.RLock()
 	defer p.accountsMu.RUnlock()
 	for _, account := range p.accounts {
 		if account.id == accountID {
-			return account.active.Load(), account.sessionUsed.Load(), true
+			return account.active.Load(), account.sessionUsed.Load(), account.unhealthy.Load(), true
 		}
 	}
-	return 0, 0, false
+	return 0, 0, false, false
 }
 
 func (p *clientPool) setAccountHealthy(accountID string, healthy bool) bool {

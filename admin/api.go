@@ -20,6 +20,7 @@ var errAccountExists = errors.New("account already exists")
 type AccountRuntimeStats struct {
 	ActiveRequests int64
 	SessionUsed    int64
+	Unhealthy      bool
 }
 
 // API exposes administrator authentication and management endpoints.
@@ -284,10 +285,12 @@ func (a *API) accountCooldownSnapshot() map[string]time.Time {
 	return a.onAccountCooldowns()
 }
 
-// mergeRuntimeStats overlays live counters (active requests, session usage)
-// from the runtime pool onto a persisted Account before it is returned to the
-// caller. The persisted SessionUsed acts as a floor: runtime usage is taken
-// when it is higher (i.e. since the last persistence cycle).
+// mergeRuntimeStats overlays live counters (active requests, session usage,
+// unhealthy flag) from the runtime pool onto a persisted Account before it is
+// returned to the caller. The persisted SessionUsed acts as a floor: runtime
+// usage is taken when it is higher (i.e. since the last persistence cycle).
+// If the runtime pool considers the account unhealthy but the persisted status
+// doesn't reflect that yet, the status is updated so the UI stays accurate.
 func (a *API) mergeRuntimeStats(account *Account) {
 	if a.onAccountStats == nil {
 		return
@@ -299,6 +302,14 @@ func (a *API) mergeRuntimeStats(account *Account) {
 	account.ActiveRequests = stats.ActiveRequests
 	if stats.SessionUsed > account.SessionUsed {
 		account.SessionUsed = stats.SessionUsed
+	}
+	// Sync runtime health state so the UI reflects bans/blocks immediately
+	// without waiting for the next keepalive cycle.
+	if stats.Unhealthy && account.Status != "unhealthy" {
+		account.Status = "unhealthy"
+		if account.StatusMessage == "" {
+			account.StatusMessage = "marked unhealthy by runtime (401/402/403 or explicit check)"
+		}
 	}
 }
 

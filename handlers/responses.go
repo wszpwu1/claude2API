@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
@@ -219,7 +220,7 @@ func (h *Handler) responsesToolStream(c *gin.Context, client *claude.Client, req
 }
 
 func (h *Handler) responsesNonStream(c *gin.Context, client *claude.Client, prompt, claudeModel, effort, conversationID, accountID string) {
-	_, content, err := h.runCompletion(c.Request.Context(), client, prompt, claudeModel, effort, conversationID, accountID, nil, nil)
+	_, content, err := h.runCompletion(c.Request.Context(), client, prompt, claudeModel, effort, conversationID, accountID, nil, []json.RawMessage{})
 	if err != nil {
 		upstreamError(c, err.Error())
 		return
@@ -292,7 +293,7 @@ func (h *Handler) responsesStream(c *gin.Context, client *claude.Client, prompt,
 		if flusher != nil {
 			flusher.Flush()
 		}
-	}, nil)
+	}, []json.RawMessage{})
 	c.Set("inputTokens", int64(len([]rune(prompt))/4))
 	c.Set("outputTokens", int64(len([]rune(full.String()))/4))
 

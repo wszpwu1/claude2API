@@ -31,29 +31,55 @@ type toolCall struct {
 // fences (```json ... ```) that Claude sometimes wraps around the block.
 var toolCallRe = regexp.MustCompile("(?s)(?:```(?:json)?\\s*)?\\[TOOL_CALL\\]\\s*(\\{[\\s\\S]*?\\})\\s*\\[/TOOL_CALL\\](?:\\s*```)?")
 
+// xmlToolCallRe matches <tool_call>...</tool_call> and <function_call>...</function_call>
+// formats that Claude sometimes emits instead of the primary [TOOL_CALL] markers.
+var xmlToolCallRe = regexp.MustCompile(`(?s)<(?:tool_call|function_call)>\s*(\{[\s\S]*?\})\s*</(?:tool_call|function_call)>`)
+
 // extractToolCalls parses all tool calls embedded in the model's text.
 // Returns the text stripped of tool-call markers, and the parsed calls.
-// A single pass over the string is used: match positions are collected,
-// the stripped output is assembled while iterating, and JSON is decoded
-// in-line — avoiding the redundant second regex scan of ReplaceAllString.
+//
+// Detection order:
+//  1. Primary [TOOL_CALL]...[/TOOL_CALL] format (with optional code-fence wrapper).
+//  2. XML-style <tool_call>...</tool_call> / <function_call>...</function_call> fallback.
+//
+// Both paths share parseToolCallMatches which also handles the "arguments" key
+// (OpenAI-style) in addition to "input", so mix-ups between formats are recovered.
 func extractToolCalls(text string) (string, []toolCall) {
 	// Pre-process: strip code fences that wrap only [TOOL_CALL] content so the
-	// regex can match even when Claude buries the markers inside a code block.
+	// primary regex can match even when Claude buries the markers inside a code block.
 	preprocessed := stripToolCallCodeFences(text)
-	indices := toolCallRe.FindAllStringSubmatchIndex(preprocessed, -1)
-	if len(indices) == 0 {
-		return text, nil
+
+	// Primary format.
+	if indices := toolCallRe.FindAllStringSubmatchIndex(preprocessed, -1); len(indices) > 0 {
+		return parseToolCallMatches(preprocessed, indices)
 	}
+
+	// XML-style fallback: <tool_call>...</tool_call> or <function_call>...</function_call>.
+	if indices := xmlToolCallRe.FindAllStringSubmatchIndex(preprocessed, -1); len(indices) > 0 {
+		return parseToolCallMatches(preprocessed, indices)
+	}
+
+	// Return preprocessed rather than the original text: code-fence stripping
+	// may have already cleaned up TOOL_CALL wrapper syntax.
+	return preprocessed, nil
+}
+
+// parseToolCallMatches is the shared extraction loop used by both the primary
+// [TOOL_CALL] regex and the XML fallback. It handles:
+//   - "input" key (Anthropic format)
+//   - "arguments" key as a JSON object or JSON-encoded string (OpenAI format)
+//   - Flat key/value pairs when neither "input" nor "arguments" is present
+func parseToolCallMatches(text string, indices [][]int) (string, []toolCall) {
 	var calls []toolCall
 	var sb strings.Builder
 	prev := 0
 	for _, loc := range indices {
-		// Append the plain text that precedes this match.
-		sb.WriteString(preprocessed[prev:loc[0]])
+		// Append plain text that precedes this match.
+		sb.WriteString(text[prev:loc[0]])
 		prev = loc[1]
 
 		// loc[2]:loc[3] is capture group 1 — the raw JSON payload.
-		jsonBytes := []byte(preprocessed[loc[2]:loc[3]])
+		jsonBytes := []byte(text[loc[2]:loc[3]])
 		var raw map[string]interface{}
 		if err := json.Unmarshal(jsonBytes, &raw); err != nil {
 			// Try to salvage by collapsing interior whitespace: Claude sometimes
@@ -71,20 +97,37 @@ func extractToolCalls(text string) (string, []toolCall) {
 		if id == "" {
 			id = fmt.Sprintf("toolu_%d", time.Now().UnixNano())
 		}
-		input, _ := raw["input"].(map[string]interface{})
+
+		// Resolve arguments: prefer "input", then "arguments" (OpenAI format),
+		// then fall back to all remaining top-level keys.
+		var input map[string]interface{}
+		if v, ok := raw["input"].(map[string]interface{}); ok {
+			input = v
+		} else if args, ok := raw["arguments"]; ok {
+			switch v := args.(type) {
+			case map[string]interface{}:
+				input = v
+			case string:
+				// arguments may be a JSON-encoded string (common in OpenAI transcripts).
+				var parsed map[string]interface{}
+				if json.Unmarshal([]byte(v), &parsed) == nil {
+					input = parsed
+				}
+			}
+		}
 		if input == nil {
-			// Allow flat args when "input" key is absent.
+			// Flat args: every key except reserved protocol fields becomes an input param.
 			input = make(map[string]interface{}, len(raw))
 			for k, v := range raw {
-				if k == "name" || k == "id" {
+				if k == "name" || k == "id" || k == "arguments" {
 					continue
 				}
 				input[k] = v
 			}
 		}
-		calls = append(calls, toolCall{Name: name, ID: id, Input: input, Raw: preprocessed[loc[0]:loc[1]]})
+		calls = append(calls, toolCall{Name: name, ID: id, Input: input, Raw: text[loc[0]:loc[1]]})
 	}
-	sb.WriteString(preprocessed[prev:])
+	sb.WriteString(text[prev:])
 	return sb.String(), calls
 }
 
@@ -285,32 +328,27 @@ func toolRead(input map[string]interface{}) string {
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		// File not found: list the parent directory so the model can see real
-		// filenames and correct the path — never guess or fabricate a new path.
-		parent := filepath.Dir(path)
-		var listing string
-		entries, dirErr := os.ReadDir(parent)
-		if dirErr == nil && len(entries) > 0 {
-			names := make([]string, 0, len(entries))
-			for _, e := range entries {
-				if e.IsDir() {
-					names = append(names, e.Name()+"/")
-				} else {
-					names = append(names, e.Name())
-				}
-			}
-			listing = strings.Join(names, "\n")
-		} else {
-			listing = "(unable to list directory)"
+		// File not found: immediately search the tree for files with the same
+		// base name so the model gets the real path in this single round-trip
+		// instead of requiring a separate Glob call followed by another Read.
+		base := filepath.Base(path)
+		var found []string
+		if matches, gErr := doublestar.Glob(os.DirFS("."), "**/"+base, doublestar.WithFilesOnly()); gErr == nil && len(matches) > 0 {
+			found = matches
 		}
-		return fmt.Sprintf(
-			"ERROR: file not found: %s\n\n"+
-				"IMPORTANT: Do NOT guess or invent another path.\n"+
-				"Use the Glob tool to search for the correct file, e.g.:\n"+
-				"  Glob pattern=\"**/%s\" path=\".\"\n\n"+
-				"Actual contents of parent directory (%s):\n%s",
-			path, filepath.Base(path), parent, listing,
-		)
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("ERROR: file not found: %s\n\n", path))
+		sb.WriteString("IMPORTANT: Do NOT guess or invent another path.\n")
+		if len(found) > 0 {
+			sb.WriteString(fmt.Sprintf("Found %d file(s) named %q — use one of these exact paths with Read:\n", len(found), base))
+			for _, f := range found {
+				sb.WriteString("  " + f + "\n")
+			}
+		} else {
+			sb.WriteString(fmt.Sprintf("No file named %q found in the current tree.\n", base))
+			sb.WriteString("Use Glob to search: Glob pattern=\"**/<filename>\" path=\".\"\n")
+		}
+		return sb.String()
 	}
 	if isMediaFile(path) {
 		mediaType := mime.TypeByExtension(strings.ToLower(filepath.Ext(path)))

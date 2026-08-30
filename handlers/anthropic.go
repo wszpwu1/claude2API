@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"claude2api/claude"
 	"claude2api/models"
@@ -328,7 +329,7 @@ func anthropicContentToString(content interface{}) string {
 }
 
 func (h *Handler) anthropicNonStream(c *gin.Context, client *claude.Client, prompt, claudeModel, effort, conversationID, accountID string) {
-	_, content, err := h.runCompletion(c.Request.Context(), client, prompt, claudeModel, effort, conversationID, accountID, nil, nil)
+	_, content, err := h.runCompletion(c.Request.Context(), client, prompt, claudeModel, effort, conversationID, accountID, nil, []json.RawMessage{})
 	if err != nil {
 		upstreamError(c, err.Error())
 		return
@@ -418,9 +419,11 @@ func (h *Handler) anthropicStream(c *gin.Context, client *claude.Client, prompt,
 		ContentBlock: models.AnthropicContentBlock{Type: "text", Text: ""},
 	})
 
-	var outputChars int
+	var outputRunes int
 	_, _, err := h.runCompletion(c.Request.Context(), client, prompt, claudeModel, effort, conversationID, accountID, func(text string) {
-		outputChars += len(text)
+		// Count runes for accurate multi-byte (CJK) token estimation, consistent
+		// with all other token counting paths in the proxy.
+		outputRunes += len([]rune(text))
 		writeSSE(c.Writer, models.AnthropicStreamContentBlockDelta{
 			Type:  "content_block_delta",
 			Index: 0,
@@ -429,9 +432,9 @@ func (h *Handler) anthropicStream(c *gin.Context, client *claude.Client, prompt,
 		if flusher != nil {
 			flusher.Flush()
 		}
-	}, nil)
+	}, []json.RawMessage{})
 	c.Set("inputTokens", int64(len([]rune(prompt))/4))
-	c.Set("outputTokens", int64(outputChars/4))
+	c.Set("outputTokens", int64(outputRunes/4))
 
 	// content_block_stop
 	writeSSE(c.Writer, models.AnthropicStreamContentBlockStop{Type: "content_block_stop", Index: 0})
@@ -444,7 +447,7 @@ func (h *Handler) anthropicStream(c *gin.Context, client *claude.Client, prompt,
 	writeSSE(c.Writer, models.AnthropicStreamMessageDelta{
 		Type:  "message_delta",
 		Delta: models.AnthropicStopDelta{StopReason: stopReason},
-		Usage: models.AnthropicUsage{OutputTokens: outputChars / 4},
+		Usage: models.AnthropicUsage{OutputTokens: outputRunes / 4},
 	})
 
 	// message_stop
@@ -610,7 +613,10 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 
 	// Detect whether this is a file/code operation task so we can apply
 	// stricter tool-use discipline and prevent switch_mode escapes.
-	fileTask := isFileOperationTask(req.Messages)
+	// When the tool set itself contains file-access tools (Glob/Read/Write/Edit/Bash/Grep),
+	// we always treat it as a file task regardless of message content — the presence
+	// of those tools is the strongest signal that file operations are expected.
+	fileTask := isFileOperationTask(req.Messages, req.ToolDefs)
 
 	prompt := buildToolPrompt(req.System, req.Messages, toolDefText)
 
@@ -655,8 +661,10 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 				allBlocks = nil
 				text, calls = retryText, retryCalls
 			} else {
-				// Still no calls: keep retry text so the caller gets something.
-				text = retryContent
+				// Still no calls: use retryText (markers stripped) rather than
+				// retryContent (raw response that may contain unparsed TOOL_CALL
+				// fragments) so clients never see internal marker syntax.
+				text = retryText
 			}
 		}
 	}
@@ -702,29 +710,48 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 // switch instead of using the required file tools.
 var switchModeRe = regexp.MustCompile(`(?i)switch_mode|<switch_mode>|"switch_mode"|switchMode`)
 
-// isFileOperationTask reports whether the most recent user message in the
-// conversation involves file or code operations. Pure chat messages (greetings,
-// explanations, questions without file context) return false, letting them pass
-// through the tool loop without activating the stricter retry discipline.
-func isFileOperationTask(messages []models.AnthropicMessage) bool {
-	fileKeywords := []string{
-		// English
-		"file", "read", "write", "edit", "open", "path", "directory", "folder",
-		"search", "find", "code", "source", "function", "class", "import",
-		"modify", "create", "delete", "move", "rename", "glob", "grep",
-		// Chinese
-		"文件", "代码", "路径", "搜索", "查找", "编辑", "读取", "写入",
-		"修改", "目录", "工程", "项目", "函数", "类", "创建", "删除",
+// fileToolNames is the set of tool names that indicate file/code access.
+// When any of these tools is present in the request, stricter retry discipline
+// is activated unconditionally, without relying on keyword matching.
+var fileToolNames = map[string]struct{}{
+	"Glob": {}, "Read": {}, "Write": {}, "Edit": {}, "Bash": {}, "Grep": {},
+}
+
+// fileTaskWordRe matches file/code operation keywords at word boundaries so that
+// common English words like "find", "code", "class" inside general conversation
+// do not trigger the stricter tool-discipline retry logic.
+var fileTaskWordRe = regexp.MustCompile(
+	`(?i)\b(file|read|write|edit|open|path|directory|folder|glob|grep|` +
+		`source\s+file|source\s+code|modify\s+file|modify\s+code|` +
+		`create\s+file|delete\s+file|move\s+file|rename\s+file|` +
+		`import\s+\w|function\s+\w|class\s+\w)\b`)
+
+// chineseFileTaskRe matches Chinese file/code operation phrases.
+var chineseFileTaskRe = regexp.MustCompile(
+	`(文件|代码|路径|搜索文件|查找文件|编辑文件|读取文件|写入文件|修改文件|目录|工程|项目|函数定义|类定义|创建文件|删除文件)`)
+
+// isFileOperationTask reports whether the request involves file or code operations.
+//
+// Decision order:
+//  1. If the tool set contains any known file-access tool (Glob/Read/Write/Edit/Bash/Grep),
+//     return true immediately — the tool definitions are the authoritative signal.
+//  2. Otherwise fall back to keyword matching on the most recent user message so
+//     that pure-chat requests (no file tools) are not over-classified.
+func isFileOperationTask(messages []models.AnthropicMessage, tools []models.AnthropicTool) bool {
+	// Primary check: tool set contains a file-access tool.
+	for _, t := range tools {
+		if _, ok := fileToolNames[t.Name]; ok {
+			return true
+		}
 	}
+	// Fallback: keyword matching on the most recent user message.
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role != "user" {
 			continue
 		}
-		text := strings.ToLower(anthropicContentToString(messages[i].Content))
-		for _, kw := range fileKeywords {
-			if strings.Contains(text, kw) {
-				return true
-			}
+		text := anthropicContentToString(messages[i].Content)
+		if fileTaskWordRe.MatchString(text) || chineseFileTaskRe.MatchString(text) {
+			return true
 		}
 		break
 	}
@@ -770,34 +797,49 @@ func toolChoiceRequiresTools(toolChoice interface{}) bool {
 
 // buildToolNudge builds the human-turn nudge message that is appended when
 // the model fails to emit any tool calls on the first round.
-// It reminds the model about available tools and, if file-access tools are
-// present, explicitly tells it to use Glob before guessing a path.
+// It reminds the model about available tools and provides a concrete live
+// example using the first available tool so the model can copy the exact syntax.
 func buildToolNudge(priorText string, tools []models.AnthropicTool) string {
 	// Collect tool names so the nudge can list them.
 	names := make([]string, 0, len(tools))
 	hasFileTools := false
-	for _, t := range tools {
-		names = append(names, t.Name)
-		if t.Name == "Glob" || t.Name == "Read" || t.Name == "Bash" {
+	var globTool, firstTool *models.AnthropicTool
+	for i := range tools {
+		names = append(names, tools[i].Name)
+		switch tools[i].Name {
+		case "Glob", "Read", "Bash":
 			hasFileTools = true
+		}
+		if tools[i].Name == "Glob" && globTool == nil {
+			globTool = &tools[i]
+		}
+		if firstTool == nil {
+			firstTool = &tools[i]
 		}
 	}
 
+	nudgeID := fmt.Sprintf("toolu_retry_%d", time.Now().UnixNano())
+
 	var sb strings.Builder
 	sb.WriteString("[Human]\n")
-	sb.WriteString("You responded with plain text but you must call a tool.\n")
+	sb.WriteString("Your previous response contained no [TOOL_CALL] block. You MUST call a tool.\n")
 	sb.WriteString("Available tools: ")
 	sb.WriteString(strings.Join(names, ", "))
-	sb.WriteString(".\n")
+	sb.WriteString(".\n\n")
+	sb.WriteString("FORMAT REMINDER — emit exactly this pattern (one block per call, no code fences):\n")
 
-	if hasFileTools {
-		sb.WriteString("If you cannot find a file, call Glob first:\n")
-		sb.WriteString("  [TOOL_CALL]{\"name\":\"Glob\",\"id\":\"toolu_retry_1\",\"input\":{\"pattern\":\"**/*\",\"path\":\".\"}}[/TOOL_CALL]\n")
+	// Show a concrete example with real tool name and real input keys.
+	if hasFileTools && globTool != nil {
+		sb.WriteString(fmt.Sprintf("  [TOOL_CALL]{\"name\":\"Glob\",\"id\":%q,\"input\":{\"pattern\":\"**/*\",\"path\":\".\"}}[/TOOL_CALL]\n", nudgeID))
 		sb.WriteString("Then use Read with the exact path Glob returns.\n")
+	} else if firstTool != nil {
+		exInput := buildExampleInput(*firstTool)
+		sb.WriteString(fmt.Sprintf("  [TOOL_CALL]{\"name\":%q,\"id\":%q,\"input\":%s}[/TOOL_CALL]\n", firstTool.Name, nudgeID, exInput))
+	} else {
+		sb.WriteString(fmt.Sprintf("  [TOOL_CALL]{\"name\":\"<tool_name>\",\"id\":%q,\"input\":{}}[/TOOL_CALL]\n", nudgeID))
 	}
 
-	sb.WriteString("Emit a [TOOL_CALL]...[/TOOL_CALL] block now. Do NOT answer in prose.")
-	// Suppress the prior prose so the model doesn't repeat it.
+	sb.WriteString("\nOutput ONLY the [TOOL_CALL] block(s). Do NOT answer in prose.")
 	_ = priorText
 	return sb.String()
 }
@@ -881,11 +923,82 @@ func buildToolDefsPrompt(tools []models.AnthropicTool, toolChoice interface{}) s
 	sb.WriteString("- If Read returns \"file not found\", call Glob with pattern=\"**/<filename>\" to locate the real path before retrying.\n")
 	sb.WriteString("- After Glob returns results, call Read with the exact path from those results.\n")
 	sb.WriteString("- Do NOT fabricate paths like \"/project/src/foo.go\" unless Glob confirmed them.\n")
+
+	// Few-shot examples using the first available real tool to ground the model on
+	// the expected syntax. This significantly reduces format errors in practice.
+	if len(tools) > 0 {
+		sb.WriteString("\nFEW-SHOT EXAMPLES — copy the format exactly (do not copy the values):\n")
+		sb.WriteString("Example 1 — single tool call:\n")
+		exampleInput := buildExampleInput(tools[0])
+		exID := "toolu_01"
+		sb.WriteString(fmt.Sprintf("  [TOOL_CALL]{\"name\":%q,\"id\":%q,\"input\":%s}[/TOOL_CALL]\n", tools[0].Name, exID, exampleInput))
+		if len(tools) > 1 {
+			sb.WriteString("Example 2 — two sequential calls (each on its own line):\n")
+			ex2Input := buildExampleInput(tools[1])
+			sb.WriteString(fmt.Sprintf("  [TOOL_CALL]{\"name\":%q,\"id\":\"toolu_01\",\"input\":%s}[/TOOL_CALL]\n", tools[0].Name, exampleInput))
+			sb.WriteString(fmt.Sprintf("  [TOOL_CALL]{\"name\":%q,\"id\":\"toolu_02\",\"input\":%s}[/TOOL_CALL]\n", tools[1].Name, ex2Input))
+		}
+	}
+
 	sb.WriteString("\nAvailable tools (JSON):\n")
 	b, _ := json.MarshalIndent(tools, "", "  ")
 	sb.Write(b)
 	sb.WriteString("\n[/Tools]")
 	return sb.String()
+}
+
+// buildExampleInput returns a compact single-line JSON object with placeholder
+// values for each required property in the tool's input_schema. It is used only
+// for illustrative few-shot examples inside the prompt — values don't matter,
+// only the key names and JSON structure need to be recognisable.
+func buildExampleInput(tool models.AnthropicTool) string {
+	if tool.InputSchema == nil {
+		return "{}"
+	}
+	props, _ := tool.InputSchema["properties"].(map[string]interface{})
+	required, _ := tool.InputSchema["required"].([]interface{})
+	if len(props) == 0 {
+		return "{}"
+	}
+	// Prefer required properties; fall back to all properties when none are marked.
+	keys := make([]string, 0, len(required))
+	for _, r := range required {
+		if k, ok := r.(string); ok {
+			if _, exists := props[k]; exists {
+				keys = append(keys, k)
+			}
+		}
+	}
+	if len(keys) == 0 {
+		for k := range props {
+			keys = append(keys, k)
+		}
+	}
+	// Cap at 3 keys to keep the example concise.
+	if len(keys) > 3 {
+		keys = keys[:3]
+	}
+	// Build a placeholder value for each key based on its declared type.
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		propDef, _ := props[k].(map[string]interface{})
+		typ, _ := propDef["type"].(string)
+		var placeholder string
+		switch typ {
+		case "integer", "number":
+			placeholder = "0"
+		case "boolean":
+			placeholder = "false"
+		case "array":
+			placeholder = "[]"
+		case "object":
+			placeholder = "{}"
+		default:
+			placeholder = fmt.Sprintf("%q", "<"+k+">")
+		}
+		parts = append(parts, fmt.Sprintf("%q:%s", k, placeholder))
+	}
+	return "{" + strings.Join(parts, ",") + "}"
 }
 
 // buildToolPrompt assembles the full prompt for one round.
@@ -908,6 +1021,10 @@ func buildToolPrompt(system interface{}, messages []models.AnthropicMessage, too
 	if toolDefText != "" {
 		parts = append(parts, toolDefText)
 	}
+	// Append a short format reminder immediately before the assistant turn so the
+	// model's most recent instruction is the correct syntax, reducing the chance
+	// that it adopts a different format from earlier conversation context.
+	parts = append(parts, "[Human]\nRemember: use [TOOL_CALL]{...}[/TOOL_CALL] for every tool call — one block per call, flat JSON, no code fences.")
 	parts = append(parts, "[Assistant]\n")
 	return strings.Join(parts, "\n\n")
 }

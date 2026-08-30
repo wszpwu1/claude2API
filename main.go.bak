@@ -114,7 +114,6 @@ func main() {
 		return admin.AccountRuntimeStats{
 			ActiveRequests: stats.ActiveRequests,
 			SessionUsed:    stats.SessionUsed,
-			Unhealthy:      stats.Unhealthy,
 		}, true
 	})
 	adminAPI.SetModelMappingsChangedHandler(func(mappings []admin.ModelMapping) error {

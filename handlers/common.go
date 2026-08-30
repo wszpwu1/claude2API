@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -86,16 +87,17 @@ func (h *Handler) AccountCooldowns() map[string]time.Time {
 type AccountRuntimeStats struct {
 	ActiveRequests int64
 	SessionUsed    int64
+	Unhealthy      bool
 }
 
 // AccountStats returns runtime counters for the given account ID.
 // The second return value is false if the account is not in the pool.
 func (h *Handler) AccountStats(accountID string) (AccountRuntimeStats, bool) {
-	active, used, ok := h.clients.accountStats(accountID)
+	active, used, unhealthy, ok := h.clients.accountStats(accountID)
 	if !ok {
 		return AccountRuntimeStats{}, false
 	}
-	return AccountRuntimeStats{ActiveRequests: active, SessionUsed: used}, true
+	return AccountRuntimeStats{ActiveRequests: active, SessionUsed: used, Unhealthy: unhealthy}, true
 }
 
 // CheckAccount verifies that a configured account can access the upstream API.
@@ -315,13 +317,23 @@ func (h *Handler) runCompletion(ctx context.Context, client *claude.Client, prom
 	// Use nil check (not len > 0) so callers can pass an explicit empty slice
 	// to suppress the default web tools (e.g. tool-simulation loop).
 	toolsPayload := claude.WebTools()
+	toolsSource := "default_web_tools"
 	if tools != nil {
 		if len(tools) > 0 {
 			toolsPayload = tools[0]
+			toolsSource = "caller_override"
 		} else {
 			toolsPayload = json.RawMessage("[]")
+			toolsSource = "explicitly_disabled"
 		}
 	}
+
+	// Diagnostic metadata only: do not log prompt, cookies, or session keys.
+	// This helps determine whether unexpected imaginative/tool-oriented replies
+	// correlate with default web tools, thinking mode, or stale conversation state.
+	log.Printf("completion diagnostic: persistent=%t conversation_id=%q upstream_conversation_id=%q model=%q effort=%q thinking_mode=%q tools_source=%s tools_bytes=%d prompt_runes=%d parent_from_history=%t",
+		persistent, conversationID, convID, claudeModel, effort, thinkingMode, toolsSource,
+		len(toolsPayload), len([]rune(prompt)), state != nil && state.LastAssistantUUID != "")
 
 	// Build the real request body matching claude.ai's format
 	req := &models.ClaudeCompletionRequest{
@@ -360,7 +372,12 @@ func (h *Handler) runCompletion(ctx context.Context, client *claude.Client, prom
 	}
 
 	var thinkingBuf, sb strings.Builder
+	eventCount := 0
+	textDeltaCount := 0
+	thinkingDeltaCount := 0
+	stopSeen := false
 	for evt := range events {
+		eventCount++
 		if evt.Error != nil {
 			err := fmt.Errorf("upstream: %s", evt.Error.Message)
 			h.handleAccountError(accountID, err)
@@ -368,19 +385,25 @@ func (h *Handler) runCompletion(ctx context.Context, client *claude.Client, prom
 		}
 		// Capture thinking blocks.
 		if t := claude.ExtractThinkingFromSSE(evt); t != "" {
+			thinkingDeltaCount++
 			thinkingBuf.WriteString(t)
 		}
 		// Capture text blocks.
 		if text := claude.ExtractTextFromSSE(evt); text != "" {
+			textDeltaCount++
 			sb.WriteString(text)
 			if onText != nil {
 				onText(text)
 			}
 		}
 		if claude.IsStopEvent(evt) {
+			stopSeen = true
 			break
 		}
 	}
+	log.Printf("completion diagnostic result: conversation_id=%q events=%d text_deltas=%d thinking_deltas=%d output_runes=%d thinking_runes=%d stop_seen=%t",
+		conversationID, eventCount, textDeltaCount, thinkingDeltaCount,
+		len([]rune(sb.String())), len([]rune(thinkingBuf.String())), stopSeen)
 	if persistent {
 		state.LastHumanUUID = humanUUID
 		state.LastAssistantUUID = assistantUUID

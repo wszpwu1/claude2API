@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
@@ -58,8 +59,13 @@ func (h *Handler) ChatCompletion(c *gin.Context) {
 
 func chatRequestToAnthropic(req models.ChatCompletionRequest) models.AnthropicRequest {
 	messages := make([]models.AnthropicMessage, 0, len(req.Messages))
+	// Collect system/developer messages from the messages array so they are not silently dropped.
+	var systemParts []string
 	for _, message := range req.Messages {
 		if message.Role == "system" || message.Role == "developer" {
+			if s := anthropicContentToString(message.Content); s != "" {
+				systemParts = append(systemParts, s)
+			}
 			continue
 		}
 		if message.Role == "tool" {
@@ -70,7 +76,12 @@ func chatRequestToAnthropic(req models.ChatCompletionRequest) models.AnthropicRe
 		}
 		blocks := make([]interface{}, 0, len(message.ToolCalls)+1)
 		if message.Content != nil {
-			blocks = append(blocks, map[string]interface{}{"type": "text", "text": message.Content})
+			// anthropicContentToString normalizes string and multi-part content alike,
+			// preventing a []interface{} from being serialized as a JSON array inside
+			// the "text" field, which would produce a malformed Anthropic request.
+			if textContent := anthropicContentToString(message.Content); textContent != "" {
+				blocks = append(blocks, map[string]interface{}{"type": "text", "text": textContent})
+			}
 		}
 		for _, call := range message.ToolCalls {
 			blocks = append(blocks, openAIToolCallToAnthropic(call))
@@ -81,8 +92,17 @@ func chatRequestToAnthropic(req models.ChatCompletionRequest) models.AnthropicRe
 		}
 		messages = append(messages, models.AnthropicMessage{Role: message.Role, Content: content})
 	}
+	// Merge collected system messages with the top-level system field (top-level takes precedence as suffix).
+	var system interface{} = req.System
+	if len(systemParts) > 0 {
+		merged := strings.Join(systemParts, "\n\n")
+		if req.System != "" {
+			merged = merged + "\n\n" + req.System
+		}
+		system = merged
+	}
 	return models.AnthropicRequest{
-		Model: req.Model, Messages: messages, System: req.System, MaxTokens: req.MaxTokensToSample,
+		Model: req.Model, Messages: messages, System: system, MaxTokens: req.MaxTokensToSample,
 		Stream: req.Stream, ConversationID: req.ConversationID, ToolDefs: openAIToolsToAnthropic(req.Tools),
 		ToolChoice: openAIToolChoiceToAnthropic(req.ToolChoice), Temperature: req.Temperature, TopP: req.TopP,
 	}
@@ -155,7 +175,7 @@ func (h *Handler) chatToolStream(c *gin.Context, client *claude.Client, req mode
 }
 
 func (h *Handler) chatCompletionNonStream(c *gin.Context, client *claude.Client, prompt, claudeModel, effort, conversationID, accountID string) {
-	_, content, err := h.runCompletion(c.Request.Context(), client, prompt, claudeModel, effort, conversationID, accountID, nil, nil)
+	_, content, err := h.runCompletion(c.Request.Context(), client, prompt, claudeModel, effort, conversationID, accountID, nil, []json.RawMessage{})
 	if err != nil {
 		upstreamError(c, err.Error())
 		return
@@ -213,7 +233,7 @@ func (h *Handler) chatCompletionStream(c *gin.Context, client *claude.Client, pr
 		if flusher != nil {
 			flusher.Flush()
 		}
-	}, nil)
+	}, []json.RawMessage{})
 	c.Set("inputTokens", int64(len([]rune(prompt))/4))
 	c.Set("outputTokens", int64(len([]rune(full.String()))/4))
 	finishReason := "stop"
