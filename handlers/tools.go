@@ -640,15 +640,11 @@ func isBinary(data []byte) bool {
 }
 
 // containsFileToolCall reports whether any of the parsed tool calls is a
-// file-access tool (Glob, Grep, Read, Write, Edit, Bash). This is used by the
-// runToolLoop guard to distinguish genuine file-search attempts from prose
-// answers or switch_mode escapes.
+// file-access tool. Delegates to fileToolNames (defined in anthropic.go) so
+// both Claude Code native names and Roo Code snake_case variants are covered.
 func containsFileToolCall(calls []toolCall) bool {
-	fileTools := map[string]struct{}{
-		"Glob": {}, "Grep": {}, "Read": {}, "Write": {}, "Edit": {}, "Bash": {},
-	}
 	for _, c := range calls {
-		if _, ok := fileTools[c.Name]; ok {
+		if _, ok := fileToolNames[c.Name]; ok {
 			return true
 		}
 	}

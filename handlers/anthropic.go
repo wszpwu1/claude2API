@@ -708,7 +708,11 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 		}
 	}
 
-	if text != "" {
+	// Only include the text block when there are no tool calls.
+	// When the model emits both text and tool calls, the text is typically
+	// internal reasoning ("I'll use X to…") that clients don't need and that
+	// can confuse tool-use parsers (e.g. Roo Code) expecting pure tool_use blocks.
+	if text != "" && len(calls) == 0 {
 		allBlocks = append(allBlocks, models.AnthropicContentBlock{Type: "text", Text: text})
 	}
 	for _, call := range calls {
@@ -734,8 +738,15 @@ var switchModeRe = regexp.MustCompile(`(?i)switch_mode|<switch_mode>|"switch_mod
 // fileToolNames is the set of tool names that indicate file/code access.
 // When any of these tools is present in the request, stricter retry discipline
 // is activated unconditionally, without relying on keyword matching.
+// Includes both Claude Code native names and Roo Code / OpenAI-style snake_case names.
 var fileToolNames = map[string]struct{}{
+	// Claude Code native tool names
 	"Glob": {}, "Read": {}, "Write": {}, "Edit": {}, "Bash": {}, "Grep": {},
+	// Roo Code / snake_case variants
+	"read_file": {}, "write_to_file": {}, "create_file": {}, "delete_file": {},
+	"list_files": {}, "search_files": {}, "apply_diff": {}, "execute_command": {},
+	"str_replace_editor": {}, "str_replace_based_edit_tool": {},
+	"new_file": {}, "insert_content": {},
 }
 
 // fileTaskWordRe matches file/code operation keywords at word boundaries so that
@@ -829,15 +840,18 @@ func buildToolNudge(priorText string, tools []models.AnthropicTool) string {
 	// Collect tool names so the nudge can list them.
 	names := make([]string, 0, len(tools))
 	hasFileTools := false
-	var globTool, firstTool *models.AnthropicTool
+	var globTool, listTool, firstTool *models.AnthropicTool
 	for i := range tools {
 		names = append(names, tools[i].Name)
-		switch tools[i].Name {
-		case "Glob", "Read", "Bash":
+		if _, ok := fileToolNames[tools[i].Name]; ok {
 			hasFileTools = true
 		}
+		// Prefer Glob; fall back to list_files for Roo Code environments.
 		if tools[i].Name == "Glob" && globTool == nil {
 			globTool = &tools[i]
+		}
+		if tools[i].Name == "list_files" && listTool == nil {
+			listTool = &tools[i]
 		}
 		if firstTool == nil {
 			firstTool = &tools[i]
@@ -858,6 +872,9 @@ func buildToolNudge(priorText string, tools []models.AnthropicTool) string {
 	if hasFileTools && globTool != nil {
 		sb.WriteString(fmt.Sprintf("  [TOOL_CALL]{\"name\":\"Glob\",\"id\":%q,\"input\":{\"pattern\":\"**/*\",\"path\":\".\"}}[/TOOL_CALL]\n", nudgeID))
 		sb.WriteString("Then use Read with the exact path Glob returns.\n")
+	} else if hasFileTools && listTool != nil {
+		sb.WriteString(fmt.Sprintf("  [TOOL_CALL]{\"name\":\"list_files\",\"id\":%q,\"input\":{\"path\":\".\",\"recursive\":false}}[/TOOL_CALL]\n", nudgeID))
+		sb.WriteString("Then use read_file with the exact path list_files returns.\n")
 	} else if firstTool != nil {
 		exInput := buildExampleInput(*firstTool)
 		sb.WriteString(fmt.Sprintf("  [TOOL_CALL]{\"name\":%q,\"id\":%q,\"input\":%s}[/TOOL_CALL]\n", firstTool.Name, nudgeID, exInput))
