@@ -61,17 +61,29 @@ func chatRequestToAnthropic(req models.ChatCompletionRequest) models.AnthropicRe
 	messages := make([]models.AnthropicMessage, 0, len(req.Messages))
 	// Collect system/developer messages from the messages array so they are not silently dropped.
 	var systemParts []string
-	for _, message := range req.Messages {
+	for i := 0; i < len(req.Messages); {
+		message := req.Messages[i]
 		if message.Role == "system" || message.Role == "developer" {
 			if s := anthropicContentToString(message.Content); s != "" {
 				systemParts = append(systemParts, s)
 			}
+			i++
 			continue
 		}
+		// Merge consecutive tool messages into a SINGLE user message with multiple
+		// tool_result blocks. The Anthropic protocol requires all results from one
+		// round of tool calls to arrive in a single message; sending them as separate
+		// messages causes the model to lose cross-call context and hallucinate.
 		if message.Role == "tool" {
-			messages = append(messages, models.AnthropicMessage{Role: "user", Content: []interface{}{map[string]interface{}{
-				"type": "tool_result", "tool_use_id": message.ToolCallID, "content": message.Content,
-			}}})
+			var toolResults []interface{}
+			for i < len(req.Messages) && req.Messages[i].Role == "tool" {
+				m := req.Messages[i]
+				toolResults = append(toolResults, map[string]interface{}{
+					"type": "tool_result", "tool_use_id": m.ToolCallID, "content": m.Content,
+				})
+				i++
+			}
+			messages = append(messages, models.AnthropicMessage{Role: "user", Content: toolResults})
 			continue
 		}
 		blocks := make([]interface{}, 0, len(message.ToolCalls)+1)
@@ -91,6 +103,7 @@ func chatRequestToAnthropic(req models.ChatCompletionRequest) models.AnthropicRe
 			content = blocks
 		}
 		messages = append(messages, models.AnthropicMessage{Role: message.Role, Content: content})
+		i++
 	}
 	// Merge collected system messages with the top-level system field (top-level takes precedence as suffix).
 	var system interface{} = req.System

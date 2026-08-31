@@ -164,24 +164,44 @@ func sessionKeyFromCookie(cookie string) string {
 }
 
 // parseThinkingEnv parses the CLAUDE_THINKING env var into a value suitable for
-// Config.Thinking. Returns nil (auto), "none", or a map for enabled.
+// Config.Thinking. Returns nil (auto), a disabled map, an enabled map, or a
+// custom JSON object.
+//
+// Mapping:
+//
+//	""                          → nil  (proxy default: auto)
+//	"auto"                      → nil  (explicit auto; same as unset)
+//	"none" / "disabled"         → {"type":"disabled"}
+//	"enabled"                   → {"type":"enabled","budget_tokens":10000}
+//	JSON object                 → the parsed map (passed through verbatim)
+//	anything else               → nil  (fall back to auto rather than silently enabling)
 func parseThinkingEnv(s string) interface{} {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return nil
 	}
 	lower := strings.ToLower(s)
-	if lower == "none" || lower == "disabled" {
+	switch lower {
+	case "auto":
+		// Explicit "auto" means the proxy should let claude.ai decide — same as
+		// the unset case. Previously this fell through to the enabled branch,
+		// inadvertently switching on thinking mode whenever CLAUDE_THINKING=auto.
+		return nil
+	case "none", "disabled":
 		return map[string]interface{}{"type": "disabled"}
-	}
-	if lower != "auto" && lower != "enabled" {
-		// Try JSON.
+	case "enabled":
+		return map[string]interface{}{"type": "enabled", "budget_tokens": 10000}
+	default:
+		// Try to parse as a JSON object so callers can pass a full config like
+		// {"type":"enabled","budget_tokens":5000}.
 		var m map[string]interface{}
 		if err := json.Unmarshal([]byte(s), &m); err == nil {
 			return m
 		}
+		// Unrecognised string — fall back to auto rather than enabling thinking
+		// unexpectedly.
+		return nil
 	}
-	return map[string]interface{}{"type": "enabled", "budget_tokens": 10000}
 }
 
 // SupportedModels is the set of models exposed by the API

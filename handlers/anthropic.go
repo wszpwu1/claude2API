@@ -527,10 +527,19 @@ func (h *Handler) anthropicToolStream(c *gin.Context, client *claude.Client, req
 	for i, block := range blocks {
 		switch block.Type {
 		case "tool_use":
+			// content_block_start for tool_use MUST carry an empty Input per Anthropic's
+			// streaming spec. The full input arrives via the subsequent input_json_delta.
+			// Sending the full input here AND again in the delta causes clients to see
+			// duplicated / malformed arguments.
 			writeSSE(c.Writer, models.AnthropicStreamContentBlockStart{
-				Type:         "content_block_start",
-				Index:        i,
-				ContentBlock: block,
+				Type:  "content_block_start",
+				Index: i,
+				ContentBlock: models.AnthropicContentBlock{
+					Type: "tool_use",
+					ID:   block.ID,
+					Name: block.Name,
+					// Input intentionally omitted; delivered via input_json_delta below.
+				},
 			})
 			writeSSE(c.Writer, models.AnthropicStreamContentBlockDelta{
 				Type:  "content_block_delta",
@@ -625,7 +634,9 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 		return nil, models.AnthropicUsage{}, err
 	}
 
-	totalInputChars := len(prompt) + len(content)
+	// Use rune count throughout for accurate multi-byte (CJK) token estimation,
+	// consistent with all other token-counting paths in the proxy.
+	totalInputRunes := len([]rune(prompt)) + len([]rune(content))
 
 	// Guard 1: intercept switch_mode without any file tool call.
 	// If the model tried to escape via switch_mode instead of searching for
@@ -639,7 +650,7 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 
 	var allBlocks []models.AnthropicContentBlock
 	if roundThinking != "" {
-		totalInputChars += len(roundThinking)
+		totalInputRunes += len([]rune(roundThinking))
 		allBlocks = append(allBlocks, models.AnthropicContentBlock{Type: "thinking", Text: roundThinking})
 	}
 
@@ -650,11 +661,14 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 	// task and the model returned no calls at all (prose answer or switch_mode).
 	if (len(calls) == 0 && toolChoiceRequiresTools(req.ToolChoice)) ||
 		(fileTask && len(calls) == 0) {
-		nudge := buildToolNudge(content, req.ToolDefs)
-		retryPrompt := prompt + "\n\n[Assistant]\n" + content + "\n\n" + nudge
+		nudge := buildToolNudge(text, req.ToolDefs)
+		// Use `text` (markers stripped) rather than `content` (raw) so the model
+		// does not see broken or partial [TOOL_CALL] fragments in its prior
+		// response, which could cause it to repeat the same malformed format.
+		retryPrompt := prompt + "\n\n[Assistant]\n" + text + "\n\n" + nudge
 		_, retryContent, retryErr := h.runCompletion(ctx, client, retryPrompt, claudeModel, effort, req.ConversationID, accountID, nil, []json.RawMessage{emptyTools}, thinkingMode)
 		if retryErr == nil && retryContent != "" {
-			totalInputChars += len(retryPrompt) + len(retryContent)
+			totalInputRunes += len([]rune(retryPrompt)) + len([]rune(retryContent))
 			retryText, retryCalls := extractToolCalls(retryContent)
 			if len(retryCalls) > 0 {
 				// Retry produced tool calls — discard earlier thinking/text.
@@ -673,16 +687,23 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 	// Two consecutive rounds without any file tool calls → inject the
 	// hardcoded correction prompt to force immediate file-tool use.
 	if fileTask && len(calls) == 0 {
-		warningPrompt := prompt + "\n\n[Assistant]\n" + content + "\n\n" + buildFileTaskWarning()
+		// Use `text` (markers stripped) here as well — including raw `content`
+		// with broken TOOL_CALL fragments confuses the model into retrying the
+		// same malformed syntax instead of switching to a correct format.
+		warningPrompt := prompt + "\n\n[Assistant]\n" + text + "\n\n" + buildFileTaskWarning()
 		_, warnContent, warnErr := h.runCompletion(ctx, client, warningPrompt, claudeModel, effort, req.ConversationID, accountID, nil, []json.RawMessage{emptyTools}, thinkingMode)
 		if warnErr == nil && warnContent != "" {
-			totalInputChars += len(warningPrompt) + len(warnContent)
+			totalInputRunes += len([]rune(warningPrompt)) + len([]rune(warnContent))
 			warnText, warnCalls := extractToolCalls(warnContent)
 			if len(warnCalls) > 0 {
 				allBlocks = nil
 				text, calls = warnText, warnCalls
 			} else {
-				text = warnContent
+				// Use warnText (markers stripped) rather than warnContent (raw
+				// response that may contain unparsed TOOL_CALL fragments) so
+				// clients never see internal marker syntax — same discipline as
+				// Guard 2's retryText fallback.
+				text = warnText
 			}
 		}
 	}
@@ -700,7 +721,7 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 	}
 
 	usage := models.AnthropicUsage{
-		InputTokens:  totalInputChars / 4,
+		InputTokens:  totalInputRunes / 4,
 		OutputTokens: totalOutputTokens(allBlocks),
 	}
 	return allBlocks, usage, nil
@@ -718,13 +739,18 @@ var fileToolNames = map[string]struct{}{
 }
 
 // fileTaskWordRe matches file/code operation keywords at word boundaries so that
-// common English words like "find", "code", "class" inside general conversation
-// do not trigger the stricter tool-discipline retry logic.
+// general conversation does not trigger the stricter tool-discipline retry logic.
+// Intentionally narrow: only match phrases that unambiguously refer to file/path
+// operations. Generic terms like "function", "class", "import" are excluded
+// because they appear in normal conversation ("what does this function do?") and
+// would cause every code-question to be misclassified as a file-operation task,
+// triggering unnecessary multi-round retries.
 var fileTaskWordRe = regexp.MustCompile(
-	`(?i)\b(file|read|write|edit|open|path|directory|folder|glob|grep|` +
-		`source\s+file|source\s+code|modify\s+file|modify\s+code|` +
+	`(?i)\b(file|path|directory|folder|glob|grep|` +
+		`source\s+file|source\s+code|` +
+		`modify\s+file|modify\s+code|` +
 		`create\s+file|delete\s+file|move\s+file|rename\s+file|` +
-		`import\s+\w|function\s+\w|class\s+\w)\b`)
+		`read\s+file|write\s+file|open\s+file|edit\s+file)\b`)
 
 // chineseFileTaskRe matches Chinese file/code operation phrases.
 var chineseFileTaskRe = regexp.MustCompile(

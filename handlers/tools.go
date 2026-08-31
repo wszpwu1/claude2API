@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"log"
 	"mime"
 	"os"
 	"os/exec"
@@ -35,6 +36,14 @@ var toolCallRe = regexp.MustCompile("(?s)(?:```(?:json)?\\s*)?\\[TOOL_CALL\\]\\s
 // formats that Claude sometimes emits instead of the primary [TOOL_CALL] markers.
 var xmlToolCallRe = regexp.MustCompile(`(?s)<(?:tool_call|function_call)>\s*(\{[\s\S]*?\})\s*</(?:tool_call|function_call)>`)
 
+// toolCallsWrapperRe matches the OpenAI-style {"tool_calls":[...]} wrapper that
+// Claude occasionally emits when it follows an OpenAI assistant-message pattern.
+var toolCallsWrapperRe = regexp.MustCompile(`(?s)\{\s*"tool_calls"\s*:\s*(\[[\s\S]*?\])\s*\}`)
+
+// trailingCommaRe matches trailing commas immediately before a closing bracket
+// or brace — a common LLM JSON generation defect.
+var trailingCommaRe = regexp.MustCompile(`,\s*([}\]])`)
+
 // extractToolCalls parses all tool calls embedded in the model's text.
 // Returns the text stripped of tool-call markers, and the parsed calls.
 //
@@ -59,9 +68,63 @@ func extractToolCalls(text string) (string, []toolCall) {
 		return parseToolCallMatches(preprocessed, indices)
 	}
 
+	// OpenAI-style {"tool_calls":[...]} wrapper fallback.
+	// Claude sometimes emits this format when following an assistant-message pattern.
+	if calls := extractFromToolCallsWrapper(preprocessed); len(calls) > 0 {
+		// Strip the wrapper block from the text so it is not forwarded as prose.
+		cleaned := toolCallsWrapperRe.ReplaceAllString(preprocessed, "")
+		return strings.TrimSpace(cleaned), calls
+	}
+
 	// Return preprocessed rather than the original text: code-fence stripping
 	// may have already cleaned up TOOL_CALL wrapper syntax.
 	return preprocessed, nil
+}
+
+// extractFromToolCallsWrapper attempts to parse a {"tool_calls":[...]} wrapper
+// and returns the individual calls, or nil if the format does not match.
+func extractFromToolCallsWrapper(text string) []toolCall {
+	match := toolCallsWrapperRe.FindStringSubmatch(text)
+	if match == nil {
+		return nil
+	}
+	rawArray := []byte(match[1])
+	var items []map[string]interface{}
+	if err := json.Unmarshal(rawArray, &items); err != nil {
+		// Apply trailing-comma fix before giving up.
+		fixed := trailingCommaRe.ReplaceAll(rawArray, []byte("$1"))
+		if err2 := json.Unmarshal(fixed, &items); err2 != nil {
+			log.Printf("tool_calls wrapper parse failed: %v (raw: %.200s)", err2, string(rawArray))
+			return nil
+		}
+	}
+	var calls []toolCall
+	for _, item := range items {
+		name, _ := item["name"].(string)
+		if name == "" {
+			continue
+		}
+		id, _ := item["id"].(string)
+		if id == "" {
+			id = fmt.Sprintf("toolu_%d", time.Now().UnixNano())
+		}
+		var input map[string]interface{}
+		if v, ok := item["input"].(map[string]interface{}); ok {
+			input = v
+		} else if v, ok := item["arguments"].(map[string]interface{}); ok {
+			input = v
+		} else if s, ok := item["arguments"].(string); ok {
+			var parsed map[string]interface{}
+			if json.Unmarshal([]byte(s), &parsed) == nil {
+				input = parsed
+			}
+		}
+		if input == nil {
+			input = make(map[string]interface{})
+		}
+		calls = append(calls, toolCall{Name: name, ID: id, Input: input})
+	}
+	return calls
 }
 
 // parseToolCallMatches is the shared extraction loop used by both the primary
@@ -82,10 +145,13 @@ func parseToolCallMatches(text string, indices [][]int) (string, []toolCall) {
 		jsonBytes := []byte(text[loc[2]:loc[3]])
 		var raw map[string]interface{}
 		if err := json.Unmarshal(jsonBytes, &raw); err != nil {
-			// Try to salvage by collapsing interior whitespace: Claude sometimes
-			// pretty-prints JSON which is valid but confuses downstream parsers.
-			compact := compactJSON(jsonBytes)
+			// Step 1: remove trailing commas — a common LLM JSON defect.
+			noTrailing := trailingCommaRe.ReplaceAll(jsonBytes, []byte("$1"))
+			// Step 2: collapse interior whitespace so pretty-printed JSON parses.
+			compact := compactJSON(noTrailing)
 			if err2 := json.Unmarshal(compact, &raw); err2 != nil {
+				// Log the failure so maintainers can identify new format variants.
+				log.Printf("tool call JSON parse failed (dropping match): %v (raw: %.200s)", err2, string(jsonBytes))
 				continue
 			}
 		}
@@ -524,6 +590,9 @@ func toolGrep(input map[string]interface{}) string {
 	})
 	if walkErr != nil {
 		return fmt.Sprintf("ERROR: walk %s: %v", path, walkErr)
+	}
+	if len(results) == 0 {
+		return fmt.Sprintf("No matches found for pattern %q in %q", pattern, path)
 	}
 	return strings.Join(results, "\n")
 }
