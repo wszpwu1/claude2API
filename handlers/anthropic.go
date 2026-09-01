@@ -2,8 +2,11 @@ package handlers
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"encoding/hex"
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -123,6 +126,8 @@ func responseInputToAnthropicMessages(input interface{}) []models.AnthropicMessa
 					callID, _ = m["tool_call_id"].(string)
 				}
 				if callID != "" {
+					outputLen := contentSize(m["output"])
+					log.Printf("tool loop input: round=input_normalize item=function_call_output call_id=%q output_bytes=%d", callID, outputLen)
 					pendingToolResults = append(pendingToolResults, map[string]interface{}{
 						"type":        "tool_result",
 						"tool_use_id": callID,
@@ -742,6 +747,7 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 	}
 
 	text, calls := extractToolCalls(content)
+	logToolCallRound("initial", text, calls)
 
 	// Guard 2: nudge retry.
 	// Trigger when tool_choice requires a tool call, or when this is a file
@@ -757,6 +763,7 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 		if retryErr == nil && retryContent != "" {
 			totalInputRunes += len([]rune(retryPrompt)) + len([]rune(retryContent))
 			retryText, retryCalls := extractToolCalls(retryContent)
+			logToolCallRound("nudge_retry", retryText, retryCalls)
 			if len(retryCalls) > 0 {
 				// Retry produced tool calls — discard earlier thinking/text.
 				allBlocks = nil
@@ -782,6 +789,7 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 		if warnErr == nil && warnContent != "" {
 			totalInputRunes += len([]rune(warningPrompt)) + len([]rune(warnContent))
 			warnText, warnCalls := extractToolCalls(warnContent)
+			logToolCallRound("warning_retry", warnText, warnCalls)
 			if len(warnCalls) > 0 {
 				allBlocks = nil
 				text, calls = warnText, warnCalls
@@ -1241,4 +1249,37 @@ func mustJSON(v interface{}) string {
 		return "{}"
 	}
 	return string(b)
+}
+
+func logToolCallRound(round string, strippedText string, calls []toolCall) {
+	log.Printf("tool loop round=%s text_runes=%d tool_calls=%d", round, len([]rune(strippedText)), len(calls))
+	for i, call := range calls {
+		arguments := mustJSON(call.Input)
+		sum := sha256.Sum256([]byte(arguments))
+		log.Printf(
+			"tool loop round=%s call_index=%d call_id=%q tool=%q args_bytes=%d args_sha256=%s",
+			round,
+			i,
+			call.ID,
+			call.Name,
+			len(arguments),
+			hex.EncodeToString(sum[:8]),
+		)
+	}
+}
+
+func contentSize(v interface{}) int {
+	if v == nil {
+		return 0
+	}
+	switch x := v.(type) {
+	case string:
+		return len(x)
+	default:
+		b, err := json.Marshal(x)
+		if err != nil {
+			return len(fmt.Sprintf("%v", x))
+		}
+		return len(b)
+	}
 }
