@@ -364,3 +364,58 @@ func TestResponseToolOutput(t *testing.T) {
 		t.Fatalf("unexpected function_call item: %+v", items[1])
 	}
 }
+
+func TestExtractFromToolCallsWrapperOpenAIFormat(t *testing.T) {
+	text := `prefix {"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"query\":\"abc\"}"}}]} suffix`
+	calls := extractFromToolCallsWrapper(text)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(calls))
+	}
+	if calls[0].Name != "lookup" || calls[0].ID != "call_1" {
+		t.Fatalf("wrong call: %+v", calls[0])
+	}
+	if calls[0].Input["query"] != "abc" {
+		t.Fatalf("wrong arguments: %+v", calls[0].Input)
+	}
+}
+
+func TestExtractFromToolCallsWrapperMultipleBlocks(t *testing.T) {
+	text := `{"tool_calls":[{"id":"call_1","name":"Read","input":{"file_path":"a.txt"}}]}
+{"tool_calls":[{"id":"call_2","name":"Read","input":{"file_path":"b.txt"}}]}`
+	calls := extractFromToolCallsWrapper(text)
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 calls, got %d", len(calls))
+	}
+	if calls[0].ID != "call_1" || calls[1].ID != "call_2" {
+		t.Fatalf("unexpected call IDs: %+v", calls)
+	}
+}
+
+func TestResponseInputToAnthropicMessagesFunctionCallOutput(t *testing.T) {
+	input := []interface{}{
+		map[string]interface{}{"type": "function_call_output", "call_id": "call_1", "output": "ok-1"},
+		map[string]interface{}{"type": "function_call_output", "call_id": "call_2", "output": map[string]interface{}{"status": "ok"}},
+	}
+	msgs := responseInputToAnthropicMessages(input)
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if msgs[0].Role != "user" {
+		t.Fatalf("expected user role, got %q", msgs[0].Role)
+	}
+	parts, ok := msgs[0].Content.([]interface{})
+	if !ok || len(parts) != 2 {
+		t.Fatalf("expected 2 tool_result blocks, got %#v", msgs[0].Content)
+	}
+	first, _ := parts[0].(map[string]interface{})
+	second, _ := parts[1].(map[string]interface{})
+	if first["type"] != "tool_result" || first["tool_use_id"] != "call_1" || first["content"] != "ok-1" {
+		t.Fatalf("unexpected first block: %#v", first)
+	}
+	if second["type"] != "tool_result" || second["tool_use_id"] != "call_2" {
+		t.Fatalf("unexpected second block: %#v", second)
+	}
+	if _, ok := second["content"].(string); !ok {
+		t.Fatalf("expected second content serialized as string, got %#v", second["content"])
+	}
+}

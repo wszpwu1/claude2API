@@ -84,45 +84,61 @@ func extractToolCalls(text string) (string, []toolCall) {
 // extractFromToolCallsWrapper attempts to parse a {"tool_calls":[...]} wrapper
 // and returns the individual calls, or nil if the format does not match.
 func extractFromToolCallsWrapper(text string) []toolCall {
-	match := toolCallsWrapperRe.FindStringSubmatch(text)
-	if match == nil {
+	matches := toolCallsWrapperRe.FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
 		return nil
 	}
-	rawArray := []byte(match[1])
-	var items []map[string]interface{}
-	if err := json.Unmarshal(rawArray, &items); err != nil {
-		// Apply trailing-comma fix before giving up.
-		fixed := trailingCommaRe.ReplaceAll(rawArray, []byte("$1"))
-		if err2 := json.Unmarshal(fixed, &items); err2 != nil {
-			log.Printf("tool_calls wrapper parse failed: %v (raw: %.200s)", err2, string(rawArray))
-			return nil
-		}
-	}
 	var calls []toolCall
-	for _, item := range items {
-		name, _ := item["name"].(string)
-		if name == "" {
-			continue
-		}
-		id, _ := item["id"].(string)
-		if id == "" {
-			id = fmt.Sprintf("toolu_%d", time.Now().UnixNano())
-		}
-		var input map[string]interface{}
-		if v, ok := item["input"].(map[string]interface{}); ok {
-			input = v
-		} else if v, ok := item["arguments"].(map[string]interface{}); ok {
-			input = v
-		} else if s, ok := item["arguments"].(string); ok {
-			var parsed map[string]interface{}
-			if json.Unmarshal([]byte(s), &parsed) == nil {
-				input = parsed
+	for _, match := range matches {
+		rawArray := []byte(match[1])
+		var items []map[string]interface{}
+		if err := json.Unmarshal(rawArray, &items); err != nil {
+			// Apply trailing-comma fix before giving up.
+			fixed := trailingCommaRe.ReplaceAll(rawArray, []byte("$1"))
+			if err2 := json.Unmarshal(fixed, &items); err2 != nil {
+				log.Printf("tool_calls wrapper parse failed: %v (raw: %.200s)", err2, string(rawArray))
+				continue
 			}
 		}
-		if input == nil {
-			input = make(map[string]interface{})
+		for _, item := range items {
+			name, _ := item["name"].(string)
+			id, _ := item["id"].(string)
+			var args interface{} = item["arguments"]
+			if function, ok := item["function"].(map[string]interface{}); ok {
+				if name == "" {
+					name, _ = function["name"].(string)
+				}
+				if args == nil {
+					args = function["arguments"]
+				}
+			}
+			if id == "" {
+				id, _ = item["call_id"].(string)
+			}
+			if name == "" {
+				continue
+			}
+			if id == "" {
+				id = fmt.Sprintf("toolu_%d", time.Now().UnixNano())
+			}
+			var input map[string]interface{}
+			if v, ok := item["input"].(map[string]interface{}); ok {
+				input = v
+			} else if v, ok := args.(map[string]interface{}); ok {
+				input = v
+			} else if s, ok := args.(string); ok {
+				var parsed map[string]interface{}
+				if json.Unmarshal([]byte(s), &parsed) == nil {
+					input = parsed
+				} else {
+					input = map[string]interface{}{"_raw_arguments": s}
+				}
+			}
+			if input == nil {
+				input = make(map[string]interface{})
+			}
+			calls = append(calls, toolCall{Name: name, ID: id, Input: input})
 		}
-		calls = append(calls, toolCall{Name: name, ID: id, Input: input})
 	}
 	return calls
 }

@@ -102,10 +102,61 @@ func responseInputToAnthropicMessages(input interface{}) []models.AnthropicMessa
 		return []models.AnthropicMessage{{Role: "user", Content: v}}
 	case []interface{}:
 		messages := make([]models.AnthropicMessage, 0, len(v))
-		for _, item := range v {
-			m, ok := item.(map[string]interface{})
+		for i := 0; i < len(v); {
+			m, ok := v[i].(map[string]interface{})
 			if !ok {
+				i++
 				continue
+			}
+			typ, _ := m["type"].(string)
+			if typ == "function_call_output" {
+				var toolResults []interface{}
+				for i < len(v) {
+					itemMap, ok := v[i].(map[string]interface{})
+					if !ok {
+						break
+					}
+					itemType, _ := itemMap["type"].(string)
+					if itemType != "function_call_output" {
+						break
+					}
+					callID, _ := itemMap["call_id"].(string)
+					if callID == "" {
+						callID, _ = itemMap["tool_call_id"].(string)
+					}
+					if callID != "" {
+						toolResults = append(toolResults, map[string]interface{}{
+							"type":        "tool_result",
+							"tool_use_id": callID,
+							"content":     normalizeToolResultContent(itemMap["output"]),
+						})
+					}
+					i++
+				}
+				if len(toolResults) > 0 {
+					messages = append(messages, models.AnthropicMessage{Role: "user", Content: toolResults})
+				}
+				continue
+			}
+			if typ == "function_call" {
+				callID, _ := m["call_id"].(string)
+				if callID == "" {
+					callID, _ = m["id"].(string)
+				}
+				name, _ := m["name"].(string)
+				if name != "" && callID != "" {
+					messages = append(messages, models.AnthropicMessage{
+						Role: "assistant",
+						Content: []interface{}{map[string]interface{}{
+							"type":  "tool_use",
+							"id":    callID,
+							"name":  name,
+							"input": parseFunctionCallArguments(m["arguments"]),
+						}},
+					})
+					i++
+					continue
+				}
 			}
 			role, _ := m["role"].(string)
 			if role == "system" {
@@ -116,13 +167,50 @@ func responseInputToAnthropicMessages(input interface{}) []models.AnthropicMessa
 			}
 			content, exists := m["content"]
 			if !exists {
+				i++
 				continue
 			}
 			messages = append(messages, models.AnthropicMessage{Role: role, Content: normalizeResponseContent(content)})
+			i++
 		}
 		return messages
 	default:
 		return nil
+	}
+}
+
+func normalizeToolResultContent(output interface{}) interface{} {
+	switch v := output.(type) {
+	case nil:
+		return ""
+	case string:
+		return v
+	case []interface{}:
+		return v
+	default:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return fmt.Sprintf("%v", v)
+		}
+		return string(b)
+	}
+}
+
+func parseFunctionCallArguments(raw interface{}) map[string]interface{} {
+	switch v := raw.(type) {
+	case map[string]interface{}:
+		return v
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return map[string]interface{}{}
+		}
+		var parsed map[string]interface{}
+		if err := json.Unmarshal([]byte(v), &parsed); err == nil {
+			return parsed
+		}
+		return map[string]interface{}{"_raw_arguments": v}
+	default:
+		return map[string]interface{}{}
 	}
 }
 
