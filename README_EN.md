@@ -44,7 +44,7 @@ A proxy service that converts the claude.ai web interface into a standard API, c
 **1. Clone the repository**
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/wszpwu1/claude2API.git
 cd claude2API
 ```
 
@@ -64,7 +64,7 @@ Lines starting with `#` are ignored.
 
 **3. Configure environment variables**
 
-Create a `.env` file (or edit `docker-compose.yml` directly):
+Create a `.env` file:
 
 ```env
 PORT=8080
@@ -78,13 +78,23 @@ DEFAULT_MODEL=claude-sonnet-5
 ADMIN_INITIAL_PASSWORD=yourpassword
 ```
 
-**4. Start the service**
+> `ADMIN_INITIAL_PASSWORD` only takes effect when the admin data file (`data/admin.json`) does not yet exist — it sets the initial login password.
+
+**4. Add data directory volume (persist admin panel configuration)**
+
+Append to the `volumes` section in `docker-compose.yml`:
+
+```yaml
+      - ./data:/app/data
+```
+
+**5. Start the service**
 
 ```bash
 docker compose up -d
 ```
 
-The service listens at `http://localhost:8080`.
+The service listens at `http://localhost:8080`. Admin panel: `http://localhost:8080/admin`.
 
 ---
 
@@ -93,11 +103,12 @@ The service listens at `http://localhost:8080`.
 Requires Go 1.21+.
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/wszpwu1/claude2API.git
 cd claude2API
 go build -o claude2api .
 
 export CLAUDE_SESSION_KEY=sk-ant-sid01-xxxxxxxx
+export ADMIN_INITIAL_PASSWORD=yourpassword
 ./claude2api
 ```
 

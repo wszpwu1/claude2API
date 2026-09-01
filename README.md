@@ -44,7 +44,7 @@
 **1. 克隆项目**
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/wszpwu1/claude2API.git
 cd claude2API
 ```
 
@@ -64,7 +64,7 @@ sessionKey=sk-ant-sid01-xxxxxxxx; sessionKeyLC=...; anthropic-device-id=...
 
 **3. 配置环境变量**
 
-创建 `.env` 文件（或直接在 `docker-compose.yml` 中修改）：
+创建 `.env` 文件：
 
 ```env
 PORT=8080
@@ -78,13 +78,23 @@ DEFAULT_MODEL=claude-sonnet-5
 ADMIN_INITIAL_PASSWORD=yourpassword
 ```
 
-**4. 启动服务**
+> `ADMIN_INITIAL_PASSWORD` 仅在管理面板数据文件（`data/admin.json`）不存在时生效，用于设置初始登录密码。
+
+**4. 添加数据目录挂载（持久化管理面板配置）**
+
+在 `docker-compose.yml` 的 `volumes` 下追加：
+
+```yaml
+      - ./data:/app/data
+```
+
+**5. 启动服务**
 
 ```bash
 docker compose up -d
 ```
 
-服务监听 `http://localhost:8080`。
+服务监听 `http://localhost:8080`，管理面板访问 `http://localhost:8080/admin`。
 
 ---
 
@@ -93,11 +103,12 @@ docker compose up -d
 需要 Go 1.21+。
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/wszpwu1/claude2API.git
 cd claude2API
 go build -o claude2api .
 
 export CLAUDE_SESSION_KEY=sk-ant-sid01-xxxxxxxx
+export ADMIN_INITIAL_PASSWORD=yourpassword
 ./claude2api
 ```
 
