@@ -187,8 +187,11 @@ func TestRewriteInitialReadCallsMapsLegacyRepoPath(t *testing.T) {
 	}{
 		{"windows main", `C:\Users\Administrator\Desktop\claudeapi\cmd\server\main.go`, "main.go"},
 		{"relative config", "claudeapi/internal/config/config.go", "config/config.go"},
+		{"directory config", "internal/config/custom.go", "config/custom.go"},
 		{"suffix proxy", "/tmp/work/claudeapi/internal/proxy/claude.go", "claude/client.go"},
+		{"directory handler", "/tmp/work/internal/handlers/extra.go", "handlers/extra.go"},
 		{"handler models", "internal/handlers/models.go", "handlers/common.go"},
+		{"proxy sse alias", "claudeapi/internal/proxy/sse.go", "utils/sse.go"},
 		{"middleware auth", "claudeapi/internal/middleware/auth.go", "middleware/auth.go"},
 	}
 	for _, tc := range cases {

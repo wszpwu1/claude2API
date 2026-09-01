@@ -1137,20 +1137,28 @@ func toolPathBase(filePath string) string {
 }
 
 var legacyRepoPathAliases = map[string]string{
-	"claudeapi/cmd/server/main.go":          "main.go",
-	"claudeapi/internal/config/config.go":   "config/config.go",
 	"claudeapi/internal/proxy/claude.go":    "claude/client.go",
 	"claudeapi/internal/proxy/sse.go":       "utils/sse.go",
-	"claudeapi/internal/handlers/chat.go":   "handlers/chat.go",
 	"claudeapi/internal/handlers/models.go": "handlers/common.go",
-	"claudeapi/internal/middleware/auth.go": "middleware/auth.go",
-	"cmd/server/main.go":                    "main.go",
-	"internal/config/config.go":             "config/config.go",
 	"internal/proxy/claude.go":              "claude/client.go",
 	"internal/proxy/sse.go":                 "utils/sse.go",
-	"internal/handlers/chat.go":             "handlers/chat.go",
 	"internal/handlers/models.go":           "handlers/common.go",
-	"internal/middleware/auth.go":           "middleware/auth.go",
+}
+
+var legacyRepoPathPrefixes = []struct {
+	old string
+	new string
+}{
+	{old: "claudeapi/cmd/server/", new: ""},
+	{old: "cmd/server/", new: ""},
+	{old: "claudeapi/internal/config/", new: "config/"},
+	{old: "internal/config/", new: "config/"},
+	{old: "claudeapi/internal/proxy/", new: "claude/"},
+	{old: "internal/proxy/", new: "claude/"},
+	{old: "claudeapi/internal/handlers/", new: "handlers/"},
+	{old: "internal/handlers/", new: "handlers/"},
+	{old: "claudeapi/internal/middleware/", new: "middleware/"},
+	{old: "internal/middleware/", new: "middleware/"},
 }
 
 func legacyRepoPathMapping(filePath string) (string, bool) {
@@ -1165,6 +1173,30 @@ func legacyRepoPathMapping(filePath string) (string, bool) {
 		if strings.HasSuffix(normalized, "/"+oldPath) {
 			return newPath, true
 		}
+	}
+	for _, rule := range legacyRepoPathPrefixes {
+		if mapped, ok := applyLegacyPrefixRule(normalized, rule.old, rule.new); ok {
+			return mapped, true
+		}
+	}
+	return "", false
+}
+
+func applyLegacyPrefixRule(normalized, oldPrefix, newPrefix string) (string, bool) {
+	if strings.HasPrefix(normalized, oldPrefix) {
+		rest := strings.TrimPrefix(normalized, oldPrefix)
+		if rest == "" {
+			return "", false
+		}
+		return path.Clean(newPrefix + rest), true
+	}
+	idx := strings.Index(normalized, "/"+oldPrefix)
+	if idx >= 0 {
+		rest := normalized[idx+len(oldPrefix)+1:]
+		if rest == "" {
+			return "", false
+		}
+		return path.Clean(newPrefix + rest), true
 	}
 	return "", false
 }
