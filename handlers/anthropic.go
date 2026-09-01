@@ -2,8 +2,11 @@ package handlers
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"encoding/hex"
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -102,10 +105,72 @@ func responseInputToAnthropicMessages(input interface{}) []models.AnthropicMessa
 		return []models.AnthropicMessage{{Role: "user", Content: v}}
 	case []interface{}:
 		messages := make([]models.AnthropicMessage, 0, len(v))
-		for _, item := range v {
-			m, ok := item.(map[string]interface{})
+		var pendingToolResults []interface{}
+		flushPendingToolResults := func() {
+			if len(pendingToolResults) == 0 {
+				return
+			}
+			messages = append(messages, models.AnthropicMessage{Role: "user", Content: pendingToolResults})
+			pendingToolResults = nil
+		}
+
+		for i := 0; i < len(v); i++ {
+			m, ok := v[i].(map[string]interface{})
 			if !ok {
 				continue
+			}
+			typ, _ := m["type"].(string)
+			if isResponsesToolOutputType(typ) {
+				callID, output, ok := extractResponsesToolOutput(m)
+				if ok {
+					outputLen := contentSize(output)
+					log.Printf("tool loop input: round=input_normalize item=%s call_id=%q output_bytes=%d", typ, callID, outputLen)
+					pendingToolResults = append(pendingToolResults, map[string]interface{}{
+						"type":        "tool_result",
+						"tool_use_id": callID,
+						"content":     normalizeToolResultContent(output),
+					})
+				}
+				continue
+			}
+			// Ignore non-message metadata items without breaking pending tool-result aggregation.
+			if typ == "reasoning" {
+				continue
+			}
+
+			// Any non-tool-result item marks a turn boundary: flush pending results first.
+			flushPendingToolResults()
+
+			if typ == "function_call" {
+				callID, _ := m["call_id"].(string)
+				if callID == "" {
+					callID, _ = m["id"].(string)
+				}
+				name, _ := m["name"].(string)
+				arguments := m["arguments"]
+				if function, ok := m["function"].(map[string]interface{}); ok {
+					if name == "" {
+						name, _ = function["name"].(string)
+					}
+					if callID == "" {
+						callID, _ = function["call_id"].(string)
+					}
+					if arguments == nil {
+						arguments = function["arguments"]
+					}
+				}
+				if name != "" && callID != "" {
+					messages = append(messages, models.AnthropicMessage{
+						Role: "assistant",
+						Content: []interface{}{map[string]interface{}{
+							"type":  "tool_use",
+							"id":    callID,
+							"name":  name,
+							"input": parseFunctionCallArguments(arguments),
+						}},
+					})
+					continue
+				}
 			}
 			role, _ := m["role"].(string)
 			if role == "system" {
@@ -120,10 +185,75 @@ func responseInputToAnthropicMessages(input interface{}) []models.AnthropicMessa
 			}
 			messages = append(messages, models.AnthropicMessage{Role: role, Content: normalizeResponseContent(content)})
 		}
+		flushPendingToolResults()
 		return messages
 	default:
 		return nil
 	}
+}
+
+func normalizeToolResultContent(output interface{}) interface{} {
+	switch v := output.(type) {
+	case nil:
+		return ""
+	case string:
+		return v
+	case []interface{}:
+		return v
+	default:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return fmt.Sprintf("%v", v)
+		}
+		return string(b)
+	}
+}
+
+func parseFunctionCallArguments(raw interface{}) map[string]interface{} {
+	switch v := raw.(type) {
+	case map[string]interface{}:
+		return v
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return map[string]interface{}{}
+		}
+		var parsed map[string]interface{}
+		if err := json.Unmarshal([]byte(v), &parsed); err == nil {
+			return parsed
+		}
+		return map[string]interface{}{"_raw_arguments": v}
+	default:
+		return map[string]interface{}{}
+	}
+}
+
+func isResponsesToolOutputType(typ string) bool {
+	switch typ {
+	case "function_call_output", "custom_tool_call_output", "computer_call_output":
+		return true
+	default:
+		return false
+	}
+}
+
+func extractResponsesToolOutput(item map[string]interface{}) (string, interface{}, bool) {
+	callID, _ := item["call_id"].(string)
+	if callID == "" {
+		callID, _ = item["tool_call_id"].(string)
+	}
+	if callID == "" {
+		callID, _ = item["id"].(string)
+	}
+	if callID == "" {
+		return "", nil, false
+	}
+	if output, exists := item["output"]; exists {
+		return callID, output, true
+	}
+	if content, exists := item["content"]; exists {
+		return callID, content, true
+	}
+	return callID, "", true
 }
 
 // normalizeAnthropicToolResults converts decoded tool_result maps into the
@@ -655,6 +785,7 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 	}
 
 	text, calls := extractToolCalls(content)
+	logToolCallRound("initial", text, calls)
 
 	// Guard 2: nudge retry.
 	// Trigger when tool_choice requires a tool call, or when this is a file
@@ -670,6 +801,7 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 		if retryErr == nil && retryContent != "" {
 			totalInputRunes += len([]rune(retryPrompt)) + len([]rune(retryContent))
 			retryText, retryCalls := extractToolCalls(retryContent)
+			logToolCallRound("nudge_retry", retryText, retryCalls)
 			if len(retryCalls) > 0 {
 				// Retry produced tool calls — discard earlier thinking/text.
 				allBlocks = nil
@@ -695,6 +827,7 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 		if warnErr == nil && warnContent != "" {
 			totalInputRunes += len([]rune(warningPrompt)) + len([]rune(warnContent))
 			warnText, warnCalls := extractToolCalls(warnContent)
+			logToolCallRound("warning_retry", warnText, warnCalls)
 			if len(warnCalls) > 0 {
 				allBlocks = nil
 				text, calls = warnText, warnCalls
@@ -1154,4 +1287,37 @@ func mustJSON(v interface{}) string {
 		return "{}"
 	}
 	return string(b)
+}
+
+func logToolCallRound(round string, strippedText string, calls []toolCall) {
+	log.Printf("tool loop round=%s text_runes=%d tool_calls=%d", round, len([]rune(strippedText)), len(calls))
+	for i, call := range calls {
+		arguments := mustJSON(call.Input)
+		sum := sha256.Sum256([]byte(arguments))
+		log.Printf(
+			"tool loop round=%s call_index=%d call_id=%q tool=%q args_bytes=%d args_sha256=%s",
+			round,
+			i,
+			call.ID,
+			call.Name,
+			len(arguments),
+			hex.EncodeToString(sum[:8]),
+		)
+	}
+}
+
+func contentSize(v interface{}) int {
+	if v == nil {
+		return 0
+	}
+	switch x := v.(type) {
+	case string:
+		return len(x)
+	default:
+		b, err := json.Marshal(x)
+		if err != nil {
+			return len(fmt.Sprintf("%v", x))
+		}
+		return len(b)
+	}
 }
