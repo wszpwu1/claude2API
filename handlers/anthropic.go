@@ -8,9 +8,12 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"claude2api/claude"
@@ -1145,16 +1148,10 @@ var legacyRepoPathAliases = map[string]string{
 	"internal/handlers/models.go":           "handlers/common.go",
 }
 
-var repoTopLevelDirs = map[string]struct{}{
-	"admin": {}, "claude": {}, "config": {}, "handlers": {}, "middleware": {},
-	"models": {}, "tlsclient": {}, "utils": {},
-}
-
-var repoTopLevelFiles = map[string]struct{}{
-	"api.md": {}, "api_en.md": {}, "docker-compose.yml": {}, "dockerfile": {},
-	"go.mod": {}, "go.sum": {}, "main.go": {}, "main.go.bak": {},
-	"readme.md": {}, "readme_en.md": {},
-}
+var (
+	repoFilesOnce sync.Once
+	repoFiles     map[string]struct{}
+)
 
 func legacyRepoPathMapping(filePath string) (string, bool) {
 	normalized := normalizeToolFilePath(filePath)
@@ -1169,28 +1166,70 @@ func legacyRepoPathMapping(filePath string) (string, bool) {
 			return newPath, true
 		}
 	}
-	if mapped, ok := repoRelativePathMapping(normalized); ok {
+	if mapped, ok := existingRepoFileMapping(normalized); ok {
 		return mapped, true
 	}
 	return "", false
 }
 
-func repoRelativePathMapping(normalized string) (string, bool) {
+func existingRepoFileMapping(normalized string) (string, bool) {
+	files := repositoryFiles()
+	if len(files) == 0 {
+		return "", false
+	}
 	parts := strings.Split(normalized, "/")
 	for i := 0; i < len(parts); i++ {
 		candidate := path.Clean(strings.Join(parts[i:], "/"))
 		if candidate == "." || candidate == "" {
 			continue
 		}
-		first, rest, hasSlash := strings.Cut(candidate, "/")
-		if _, ok := repoTopLevelDirs[first]; ok && hasSlash && rest != "" {
-			return candidate, true
-		}
-		if _, ok := repoTopLevelFiles[strings.ToLower(candidate)]; ok {
+		if _, ok := files[candidate]; ok {
 			return candidate, true
 		}
 	}
 	return "", false
+}
+
+func repositoryFiles() map[string]struct{} {
+	repoFilesOnce.Do(func() {
+		repoFiles = make(map[string]struct{})
+		root := findRepoRoot()
+		if root == "" {
+			return
+		}
+		_ = filepath.WalkDir(root, func(fullPath string, d os.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+			name := d.Name()
+			if d.IsDir() {
+				if strings.HasPrefix(name, ".") && fullPath != root {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			rel, err := filepath.Rel(root, fullPath)
+			if err != nil {
+				return nil
+			}
+			repoFiles[path.Clean(filepath.ToSlash(rel))] = struct{}{}
+			return nil
+		})
+	})
+	return repoFiles
+}
+
+func findRepoRoot() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	for dir := wd; dir != "" && dir != filepath.Dir(dir); dir = filepath.Dir(dir) {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+	}
+	return ""
 }
 
 func normalizeToolFilePath(filePath string) string {
