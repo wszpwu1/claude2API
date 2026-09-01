@@ -447,3 +447,63 @@ func TestResponseInputToAnthropicMessagesFunctionCallOutputPendingFlush(t *testi
 		t.Fatalf("unexpected second message: %#v", msgs[1])
 	}
 }
+
+func TestResponseInputToAnthropicMessagesLiteLLMOutputTypes(t *testing.T) {
+	input := []interface{}{
+		map[string]interface{}{"type": "custom_tool_call_output", "call_id": "call_custom", "output": "c1"},
+		map[string]interface{}{"type": "computer_call_output", "tool_call_id": "call_computer", "content": []interface{}{
+			map[string]interface{}{"type": "text", "text": "ok"},
+		}},
+	}
+	msgs := responseInputToAnthropicMessages(input)
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	parts, ok := msgs[0].Content.([]interface{})
+	if !ok || len(parts) != 2 {
+		t.Fatalf("expected 2 tool_result blocks, got %#v", msgs[0].Content)
+	}
+	first, _ := parts[0].(map[string]interface{})
+	second, _ := parts[1].(map[string]interface{})
+	if first["tool_use_id"] != "call_custom" || second["tool_use_id"] != "call_computer" {
+		t.Fatalf("unexpected tool_use_id values: %#v", parts)
+	}
+	if first["content"] != "c1" {
+		t.Fatalf("unexpected first content: %#v", first["content"])
+	}
+	if _, ok := second["content"].([]interface{}); !ok {
+		t.Fatalf("expected second content as []interface{}, got %#v", second["content"])
+	}
+}
+
+func TestResponseInputToAnthropicMessagesFunctionCallNestedFunction(t *testing.T) {
+	input := []interface{}{
+		map[string]interface{}{
+			"type":    "function_call",
+			"call_id": "call_1",
+			"function": map[string]interface{}{
+				"name":      "lookup",
+				"arguments": `{"query":"abc"}`,
+			},
+		},
+	}
+	msgs := responseInputToAnthropicMessages(input)
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if msgs[0].Role != "assistant" {
+		t.Fatalf("expected assistant role, got %q", msgs[0].Role)
+	}
+	blocks, ok := msgs[0].Content.([]interface{})
+	if !ok || len(blocks) != 1 {
+		t.Fatalf("expected one block, got %#v", msgs[0].Content)
+	}
+	block, _ := blocks[0].(map[string]interface{})
+	if block["type"] != "tool_use" || block["id"] != "call_1" || block["name"] != "lookup" {
+		t.Fatalf("unexpected tool_use block: %#v", block)
+	}
+	inputMap, _ := block["input"].(map[string]interface{})
+	if inputMap["query"] != "abc" {
+		t.Fatalf("unexpected function arguments: %#v", inputMap)
+	}
+}

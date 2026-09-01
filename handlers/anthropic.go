@@ -120,18 +120,15 @@ func responseInputToAnthropicMessages(input interface{}) []models.AnthropicMessa
 				continue
 			}
 			typ, _ := m["type"].(string)
-			if typ == "function_call_output" {
-				callID, _ := m["call_id"].(string)
-				if callID == "" {
-					callID, _ = m["tool_call_id"].(string)
-				}
-				if callID != "" {
-					outputLen := contentSize(m["output"])
-					log.Printf("tool loop input: round=input_normalize item=function_call_output call_id=%q output_bytes=%d", callID, outputLen)
+			if isResponsesToolOutputType(typ) {
+				callID, output, ok := extractResponsesToolOutput(m)
+				if ok {
+					outputLen := contentSize(output)
+					log.Printf("tool loop input: round=input_normalize item=%s call_id=%q output_bytes=%d", typ, callID, outputLen)
 					pendingToolResults = append(pendingToolResults, map[string]interface{}{
 						"type":        "tool_result",
 						"tool_use_id": callID,
-						"content":     normalizeToolResultContent(m["output"]),
+						"content":     normalizeToolResultContent(output),
 					})
 				}
 				continue
@@ -150,6 +147,18 @@ func responseInputToAnthropicMessages(input interface{}) []models.AnthropicMessa
 					callID, _ = m["id"].(string)
 				}
 				name, _ := m["name"].(string)
+				arguments := m["arguments"]
+				if function, ok := m["function"].(map[string]interface{}); ok {
+					if name == "" {
+						name, _ = function["name"].(string)
+					}
+					if callID == "" {
+						callID, _ = function["call_id"].(string)
+					}
+					if arguments == nil {
+						arguments = function["arguments"]
+					}
+				}
 				if name != "" && callID != "" {
 					messages = append(messages, models.AnthropicMessage{
 						Role: "assistant",
@@ -157,7 +166,7 @@ func responseInputToAnthropicMessages(input interface{}) []models.AnthropicMessa
 							"type":  "tool_use",
 							"id":    callID,
 							"name":  name,
-							"input": parseFunctionCallArguments(m["arguments"]),
+							"input": parseFunctionCallArguments(arguments),
 						}},
 					})
 					continue
@@ -216,6 +225,35 @@ func parseFunctionCallArguments(raw interface{}) map[string]interface{} {
 	default:
 		return map[string]interface{}{}
 	}
+}
+
+func isResponsesToolOutputType(typ string) bool {
+	switch typ {
+	case "function_call_output", "custom_tool_call_output", "computer_call_output":
+		return true
+	default:
+		return false
+	}
+}
+
+func extractResponsesToolOutput(item map[string]interface{}) (string, interface{}, bool) {
+	callID, _ := item["call_id"].(string)
+	if callID == "" {
+		callID, _ = item["tool_call_id"].(string)
+	}
+	if callID == "" {
+		callID, _ = item["id"].(string)
+	}
+	if callID == "" {
+		return "", nil, false
+	}
+	if output, exists := item["output"]; exists {
+		return callID, output, true
+	}
+	if content, exists := item["content"]; exists {
+		return callID, content, true
+	}
+	return callID, "", true
 }
 
 // normalizeAnthropicToolResults converts decoded tool_result maps into the
