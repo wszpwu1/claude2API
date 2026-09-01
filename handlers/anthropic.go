@@ -3,11 +3,12 @@ package handlers
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"path"
 	"regexp"
 	"strings"
 	"time"
@@ -785,6 +786,7 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 	}
 
 	text, calls := extractToolCalls(content)
+	calls = rewriteInitialReadCalls(req.Messages, req.ToolDefs, calls)
 	logToolCallRound("initial", text, calls)
 
 	// Guard 2: nudge retry.
@@ -801,6 +803,7 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 		if retryErr == nil && retryContent != "" {
 			totalInputRunes += len([]rune(retryPrompt)) + len([]rune(retryContent))
 			retryText, retryCalls := extractToolCalls(retryContent)
+			retryCalls = rewriteInitialReadCalls(req.Messages, req.ToolDefs, retryCalls)
 			logToolCallRound("nudge_retry", retryText, retryCalls)
 			if len(retryCalls) > 0 {
 				// Retry produced tool calls — discard earlier thinking/text.
@@ -827,6 +830,7 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 		if warnErr == nil && warnContent != "" {
 			totalInputRunes += len([]rune(warningPrompt)) + len([]rune(warnContent))
 			warnText, warnCalls := extractToolCalls(warnContent)
+			warnCalls = rewriteInitialReadCalls(req.Messages, req.ToolDefs, warnCalls)
 			logToolCallRound("warning_retry", warnText, warnCalls)
 			if len(warnCalls) > 0 {
 				allBlocks = nil
@@ -1027,6 +1031,111 @@ func containsToolUse(blocks []models.AnthropicContentBlock) bool {
 		}
 	}
 	return false
+}
+
+func rewriteInitialReadCalls(messages []models.AnthropicMessage, tools []models.AnthropicTool, calls []toolCall) []toolCall {
+	if len(calls) == 0 || hasAnyToolResults(messages) {
+		return calls
+	}
+	discoveryTool := fileDiscoveryToolName(tools)
+	if discoveryTool == "" {
+		return calls
+	}
+	out := make([]toolCall, len(calls))
+	copy(out, calls)
+	rewritten := 0
+	for i := range out {
+		if !isReadToolName(out[i].Name) {
+			continue
+		}
+		filePath := toolCallFilePath(out[i].Input)
+		base := toolPathBase(filePath)
+		if base == "" {
+			continue
+		}
+		out[i].Name = discoveryTool
+		out[i].Input = fileDiscoveryInput(discoveryTool, base)
+		rewritten++
+	}
+	if rewritten > 0 {
+		log.Printf("rewrote %d initial read tool call(s) into %s discovery call(s)", rewritten, discoveryTool)
+	}
+	return out
+}
+
+func hasAnyToolResults(messages []models.AnthropicMessage) bool {
+	for _, message := range messages {
+		parts, ok := message.Content.([]interface{})
+		if !ok {
+			continue
+		}
+		for _, part := range parts {
+			block, ok := part.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if typ, _ := block["type"].(string); typ == "tool_result" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func fileDiscoveryToolName(tools []models.AnthropicTool) string {
+	for _, tool := range tools {
+		if tool.Name == "Glob" {
+			return tool.Name
+		}
+	}
+	for _, tool := range tools {
+		if tool.Name == "list_files" {
+			return tool.Name
+		}
+	}
+	return ""
+}
+
+func isReadToolName(name string) bool {
+	return name == "Read" || name == "read_file"
+}
+
+func toolCallFilePath(input map[string]interface{}) string {
+	if input == nil {
+		return ""
+	}
+	if filePath, _ := input["file_path"].(string); strings.TrimSpace(filePath) != "" {
+		return filePath
+	}
+	if filePath, _ := input["path"].(string); strings.TrimSpace(filePath) != "" {
+		return filePath
+	}
+	return ""
+}
+
+func toolPathBase(filePath string) string {
+	filePath = strings.TrimSpace(filePath)
+	if filePath == "" {
+		return ""
+	}
+	filePath = strings.ReplaceAll(filePath, "\\", "/")
+	filePath = strings.TrimRight(filePath, "/")
+	base := path.Base(filePath)
+	if base == "." || base == "/" {
+		return ""
+	}
+	return base
+}
+
+func fileDiscoveryInput(toolName, base string) map[string]interface{} {
+	switch toolName {
+	case "Glob":
+		return map[string]interface{}{"pattern": "**/" + base, "path": "."}
+	case "list_files":
+		return map[string]interface{}{"path": ".", "recursive": true}
+	default:
+		return map[string]interface{}{}
+	}
 }
 
 // totalOutputTokens estimates total output tokens from content blocks.

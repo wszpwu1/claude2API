@@ -178,6 +178,75 @@ func TestToolDefsPrompt(t *testing.T) {
 	}
 }
 
+func TestRewriteInitialReadCallsToGlob(t *testing.T) {
+	tools := []models.AnthropicTool{{Name: "Glob"}}
+	calls := []toolCall{{
+		Name: "read_file",
+		ID:   "call_1",
+		Input: map[string]interface{}{
+			"file_path": `C:\Users\Administrator\Desktop\claudeapi\cmd\server\main.go`,
+		},
+	}}
+
+	rewritten := rewriteInitialReadCalls(nil, tools, calls)
+	if len(rewritten) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(rewritten))
+	}
+	if rewritten[0].Name != "Glob" {
+		t.Fatalf("expected Glob call, got %+v", rewritten[0])
+	}
+	if rewritten[0].ID != "call_1" {
+		t.Fatalf("expected original ID to be preserved, got %+v", rewritten[0])
+	}
+	if rewritten[0].Input["pattern"] != "**/main.go" || rewritten[0].Input["path"] != "." {
+		t.Fatalf("unexpected Glob input: %+v", rewritten[0].Input)
+	}
+}
+
+func TestRewriteInitialReadCallsSkipsFollowUpReads(t *testing.T) {
+	tools := []models.AnthropicTool{{Name: "Glob"}}
+	messages := []models.AnthropicMessage{{
+		Role: "user",
+		Content: []interface{}{
+			map[string]interface{}{"type": "tool_result", "tool_use_id": "call_0", "content": "handlers/chat.go"},
+		},
+	}}
+	calls := []toolCall{{
+		Name: "Read",
+		ID:   "call_1",
+		Input: map[string]interface{}{
+			"file_path": "handlers/chat.go",
+		},
+	}}
+
+	rewritten := rewriteInitialReadCalls(messages, tools, calls)
+	if rewritten[0].Name != "Read" {
+		t.Fatalf("follow-up read should not be rewritten: %+v", rewritten[0])
+	}
+	if rewritten[0].Input["file_path"] != "handlers/chat.go" {
+		t.Fatalf("follow-up read input changed: %+v", rewritten[0].Input)
+	}
+}
+
+func TestRewriteInitialReadCallsFallsBackToListFiles(t *testing.T) {
+	tools := []models.AnthropicTool{{Name: "list_files"}}
+	calls := []toolCall{{
+		Name: "Read",
+		ID:   "call_1",
+		Input: map[string]interface{}{
+			"file_path": "claudeapi/internal/config/config.go",
+		},
+	}}
+
+	rewritten := rewriteInitialReadCalls(nil, tools, calls)
+	if rewritten[0].Name != "list_files" {
+		t.Fatalf("expected list_files call, got %+v", rewritten[0])
+	}
+	if rewritten[0].Input["path"] != "." || rewritten[0].Input["recursive"] != true {
+		t.Fatalf("unexpected list_files input: %+v", rewritten[0].Input)
+	}
+}
+
 func TestEmptyToolsOverride(t *testing.T) {
 	var empty json.RawMessage = json.RawMessage([]byte("[]"))
 	if string(empty) != "[]" {
