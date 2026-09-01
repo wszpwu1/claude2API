@@ -102,42 +102,43 @@ func responseInputToAnthropicMessages(input interface{}) []models.AnthropicMessa
 		return []models.AnthropicMessage{{Role: "user", Content: v}}
 	case []interface{}:
 		messages := make([]models.AnthropicMessage, 0, len(v))
-		for i := 0; i < len(v); {
+		var pendingToolResults []interface{}
+		flushPendingToolResults := func() {
+			if len(pendingToolResults) == 0 {
+				return
+			}
+			messages = append(messages, models.AnthropicMessage{Role: "user", Content: pendingToolResults})
+			pendingToolResults = nil
+		}
+
+		for i := 0; i < len(v); i++ {
 			m, ok := v[i].(map[string]interface{})
 			if !ok {
-				i++
 				continue
 			}
 			typ, _ := m["type"].(string)
 			if typ == "function_call_output" {
-				var toolResults []interface{}
-				for i < len(v) {
-					itemMap, ok := v[i].(map[string]interface{})
-					if !ok {
-						break
-					}
-					itemType, _ := itemMap["type"].(string)
-					if itemType != "function_call_output" {
-						break
-					}
-					callID, _ := itemMap["call_id"].(string)
-					if callID == "" {
-						callID, _ = itemMap["tool_call_id"].(string)
-					}
-					if callID != "" {
-						toolResults = append(toolResults, map[string]interface{}{
-							"type":        "tool_result",
-							"tool_use_id": callID,
-							"content":     normalizeToolResultContent(itemMap["output"]),
-						})
-					}
-					i++
+				callID, _ := m["call_id"].(string)
+				if callID == "" {
+					callID, _ = m["tool_call_id"].(string)
 				}
-				if len(toolResults) > 0 {
-					messages = append(messages, models.AnthropicMessage{Role: "user", Content: toolResults})
+				if callID != "" {
+					pendingToolResults = append(pendingToolResults, map[string]interface{}{
+						"type":        "tool_result",
+						"tool_use_id": callID,
+						"content":     normalizeToolResultContent(m["output"]),
+					})
 				}
 				continue
 			}
+			// Ignore non-message metadata items without breaking pending tool-result aggregation.
+			if typ == "reasoning" {
+				continue
+			}
+
+			// Any non-tool-result item marks a turn boundary: flush pending results first.
+			flushPendingToolResults()
+
 			if typ == "function_call" {
 				callID, _ := m["call_id"].(string)
 				if callID == "" {
@@ -154,7 +155,6 @@ func responseInputToAnthropicMessages(input interface{}) []models.AnthropicMessa
 							"input": parseFunctionCallArguments(m["arguments"]),
 						}},
 					})
-					i++
 					continue
 				}
 			}
@@ -167,12 +167,11 @@ func responseInputToAnthropicMessages(input interface{}) []models.AnthropicMessa
 			}
 			content, exists := m["content"]
 			if !exists {
-				i++
 				continue
 			}
 			messages = append(messages, models.AnthropicMessage{Role: role, Content: normalizeResponseContent(content)})
-			i++
 		}
+		flushPendingToolResults()
 		return messages
 	default:
 		return nil

@@ -419,3 +419,31 @@ func TestResponseInputToAnthropicMessagesFunctionCallOutput(t *testing.T) {
 		t.Fatalf("expected second content serialized as string, got %#v", second["content"])
 	}
 }
+
+func TestResponseInputToAnthropicMessagesFunctionCallOutputPendingFlush(t *testing.T) {
+	input := []interface{}{
+		map[string]interface{}{"type": "function_call_output", "call_id": "call_1", "output": "r1"},
+		map[string]interface{}{"type": "reasoning", "summary": []interface{}{map[string]interface{}{"text": "thinking"}}},
+		map[string]interface{}{"type": "function_call_output", "call_id": "call_2", "output": "r2"},
+		map[string]interface{}{"type": "message", "role": "user", "content": "next"},
+	}
+	msgs := responseInputToAnthropicMessages(input)
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages, got %d: %#v", len(msgs), msgs)
+	}
+	if msgs[0].Role != "user" {
+		t.Fatalf("expected first message user, got %q", msgs[0].Role)
+	}
+	parts, ok := msgs[0].Content.([]interface{})
+	if !ok || len(parts) != 2 {
+		t.Fatalf("expected first message to carry 2 tool_results, got %#v", msgs[0].Content)
+	}
+	first, _ := parts[0].(map[string]interface{})
+	second, _ := parts[1].(map[string]interface{})
+	if first["tool_use_id"] != "call_1" || second["tool_use_id"] != "call_2" {
+		t.Fatalf("unexpected tool_use_id order: %#v", parts)
+	}
+	if msgs[1].Role != "user" || msgs[1].Content != "next" {
+		t.Fatalf("unexpected second message: %#v", msgs[1])
+	}
+}
