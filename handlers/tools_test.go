@@ -178,6 +178,112 @@ func TestToolDefsPrompt(t *testing.T) {
 	}
 }
 
+func TestRewriteInitialReadCallsMapsLegacyRepoPath(t *testing.T) {
+	tools := []models.AnthropicTool{{Name: "Glob"}}
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"windows main", `C:\Users\Administrator\Desktop\claudeapi\cmd\server\main.go`, "main.go"},
+		{"existing admin file", `C:\Users\Administrator\Desktop\claudeapi\admin\api.go`, "admin/api.go"},
+		{"relative config", "claudeapi/internal/config/config.go", "config/config.go"},
+		{"existing handler file", "/tmp/workspace/internal/handlers/chat.go", "handlers/chat.go"},
+		{"existing model file", "/tmp/workspace/claudeapi/models/request.go", "models/request.go"},
+		{"suffix proxy alias", "/tmp/work/claudeapi/internal/proxy/claude.go", "claude/client.go"},
+		{"handler models", "internal/handlers/models.go", "handlers/common.go"},
+		{"proxy sse alias", "claudeapi/internal/proxy/sse.go", "utils/sse.go"},
+		{"middleware auth", "claudeapi/internal/middleware/auth.go", "middleware/auth.go"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := []toolCall{{
+				Name: "read_file",
+				ID:   "call_1",
+				Input: map[string]interface{}{
+					"file_path": tc.in,
+				},
+			}}
+			rewritten := rewriteInitialReadCalls(nil, tools, calls)
+			if len(rewritten) != 1 {
+				t.Fatalf("expected 1 call, got %d", len(rewritten))
+			}
+			if rewritten[0].Name != "read_file" {
+				t.Fatalf("expected read_file call to be preserved, got %+v", rewritten[0])
+			}
+			if rewritten[0].ID != "call_1" {
+				t.Fatalf("expected original ID to be preserved, got %+v", rewritten[0])
+			}
+			if rewritten[0].Input["file_path"] != tc.want {
+				t.Fatalf("unexpected mapped path: %+v", rewritten[0].Input)
+			}
+		})
+	}
+}
+
+func TestRewriteInitialReadCallsSkipsFollowUpReads(t *testing.T) {
+	tools := []models.AnthropicTool{{Name: "Glob"}}
+	messages := []models.AnthropicMessage{{
+		Role: "user",
+		Content: []interface{}{
+			map[string]interface{}{"type": "tool_result", "tool_use_id": "call_0", "content": "handlers/chat.go"},
+		},
+	}}
+	calls := []toolCall{{
+		Name: "Read",
+		ID:   "call_1",
+		Input: map[string]interface{}{
+			"file_path": "handlers/chat.go",
+		},
+	}}
+
+	rewritten := rewriteInitialReadCalls(messages, tools, calls)
+	if rewritten[0].Name != "Read" {
+		t.Fatalf("follow-up read should not be rewritten: %+v", rewritten[0])
+	}
+	if rewritten[0].Input["file_path"] != "handlers/chat.go" {
+		t.Fatalf("follow-up read input changed: %+v", rewritten[0].Input)
+	}
+}
+
+func TestRewriteInitialReadCallsFallsBackToListFiles(t *testing.T) {
+	tools := []models.AnthropicTool{{Name: "list_files"}}
+	calls := []toolCall{{
+		Name: "Read",
+		ID:   "call_1",
+		Input: map[string]interface{}{
+			"file_path": "claudeapi/internal/unknown/missing.go",
+		},
+	}}
+
+	rewritten := rewriteInitialReadCalls(nil, tools, calls)
+	if rewritten[0].Name != "list_files" {
+		t.Fatalf("expected list_files call, got %+v", rewritten[0])
+	}
+	if rewritten[0].Input["path"] != "." || rewritten[0].Input["recursive"] != true {
+		t.Fatalf("unexpected list_files input: %+v", rewritten[0].Input)
+	}
+}
+
+func TestRewriteInitialReadCallsFallsBackToGlobWhenNoLegacyMap(t *testing.T) {
+	tools := []models.AnthropicTool{{Name: "Glob"}}
+	calls := []toolCall{{
+		Name: "Read",
+		ID:   "call_1",
+		Input: map[string]interface{}{
+			"file_path": `C:\Users\Administrator\Desktop\claudeapi\other\missing.go`,
+		},
+	}}
+
+	rewritten := rewriteInitialReadCalls(nil, tools, calls)
+	if rewritten[0].Name != "Glob" {
+		t.Fatalf("expected Glob fallback, got %+v", rewritten[0])
+	}
+	if rewritten[0].Input["pattern"] != "**/missing.go" || rewritten[0].Input["path"] != "." {
+		t.Fatalf("unexpected Glob fallback input: %+v", rewritten[0].Input)
+	}
+}
+
 func TestEmptyToolsOverride(t *testing.T) {
 	var empty json.RawMessage = json.RawMessage([]byte("[]"))
 	if string(empty) != "[]" {

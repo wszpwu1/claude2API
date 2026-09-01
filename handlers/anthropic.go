@@ -3,13 +3,17 @@ package handlers
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path"
+	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"claude2api/claude"
@@ -785,6 +789,7 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 	}
 
 	text, calls := extractToolCalls(content)
+	calls = rewriteInitialReadCalls(req.Messages, req.ToolDefs, calls)
 	logToolCallRound("initial", text, calls)
 
 	// Guard 2: nudge retry.
@@ -801,6 +806,7 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 		if retryErr == nil && retryContent != "" {
 			totalInputRunes += len([]rune(retryPrompt)) + len([]rune(retryContent))
 			retryText, retryCalls := extractToolCalls(retryContent)
+			retryCalls = rewriteInitialReadCalls(req.Messages, req.ToolDefs, retryCalls)
 			logToolCallRound("nudge_retry", retryText, retryCalls)
 			if len(retryCalls) > 0 {
 				// Retry produced tool calls — discard earlier thinking/text.
@@ -827,6 +833,7 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 		if warnErr == nil && warnContent != "" {
 			totalInputRunes += len([]rune(warningPrompt)) + len([]rune(warnContent))
 			warnText, warnCalls := extractToolCalls(warnContent)
+			warnCalls = rewriteInitialReadCalls(req.Messages, req.ToolDefs, warnCalls)
 			logToolCallRound("warning_retry", warnText, warnCalls)
 			if len(warnCalls) > 0 {
 				allBlocks = nil
@@ -1027,6 +1034,245 @@ func containsToolUse(blocks []models.AnthropicContentBlock) bool {
 		}
 	}
 	return false
+}
+
+func rewriteInitialReadCalls(messages []models.AnthropicMessage, tools []models.AnthropicTool, calls []toolCall) []toolCall {
+	if len(calls) == 0 || hasAnyToolResults(messages) {
+		return calls
+	}
+	out := make([]toolCall, len(calls))
+	copy(out, calls)
+	mapped := 0
+	discovered := 0
+	for i := range out {
+		if !isReadToolName(out[i].Name) {
+			continue
+		}
+		filePath := toolCallFilePath(out[i].Input)
+		if mappedPath, ok := legacyRepoPathMapping(filePath); ok {
+			out[i].Input = replaceToolCallFilePath(out[i].Input, mappedPath)
+			mapped++
+			continue
+		}
+		discoveryTool := fileDiscoveryToolName(tools)
+		if discoveryTool == "" {
+			continue
+		}
+		base := toolPathBase(filePath)
+		if base == "" {
+			continue
+		}
+		out[i].Name = discoveryTool
+		out[i].Input = fileDiscoveryInput(discoveryTool, base)
+		discovered++
+	}
+	if mapped > 0 {
+		log.Printf("remapped %d initial read tool call(s) from legacy claudeapi paths", mapped)
+	}
+	if discovered > 0 {
+		log.Printf("rewrote %d initial read tool call(s) into discovery call(s)", discovered)
+	}
+	return out
+}
+
+func hasAnyToolResults(messages []models.AnthropicMessage) bool {
+	for _, message := range messages {
+		parts, ok := message.Content.([]interface{})
+		if !ok {
+			continue
+		}
+		for _, part := range parts {
+			block, ok := part.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if typ, _ := block["type"].(string); typ == "tool_result" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func fileDiscoveryToolName(tools []models.AnthropicTool) string {
+	for _, tool := range tools {
+		if tool.Name == "Glob" {
+			return tool.Name
+		}
+	}
+	for _, tool := range tools {
+		if tool.Name == "list_files" {
+			return tool.Name
+		}
+	}
+	return ""
+}
+
+func isReadToolName(name string) bool {
+	return name == "Read" || name == "read_file"
+}
+
+func toolCallFilePath(input map[string]interface{}) string {
+	if input == nil {
+		return ""
+	}
+	if filePath, _ := input["file_path"].(string); strings.TrimSpace(filePath) != "" {
+		return filePath
+	}
+	if filePath, _ := input["path"].(string); strings.TrimSpace(filePath) != "" {
+		return filePath
+	}
+	return ""
+}
+
+func toolPathBase(filePath string) string {
+	filePath = strings.TrimSpace(filePath)
+	if filePath == "" {
+		return ""
+	}
+	filePath = strings.ReplaceAll(filePath, "\\", "/")
+	filePath = strings.TrimRight(filePath, "/")
+	base := path.Base(filePath)
+	if base == "." || base == "/" {
+		return ""
+	}
+	return base
+}
+
+var legacyRepoPathAliases = map[string]string{
+	"claudeapi/internal/proxy/claude.go":    "claude/client.go",
+	"claudeapi/internal/proxy/sse.go":       "utils/sse.go",
+	"claudeapi/internal/handlers/models.go": "handlers/common.go",
+	"internal/proxy/claude.go":              "claude/client.go",
+	"internal/proxy/sse.go":                 "utils/sse.go",
+	"internal/handlers/models.go":           "handlers/common.go",
+}
+
+var (
+	repoFilesOnce sync.Once
+	repoFiles     map[string]struct{}
+)
+
+func legacyRepoPathMapping(filePath string) (string, bool) {
+	normalized := normalizeToolFilePath(filePath)
+	if normalized == "" {
+		return "", false
+	}
+	if mapped, ok := legacyRepoPathAliases[normalized]; ok {
+		return mapped, true
+	}
+	for oldPath, newPath := range legacyRepoPathAliases {
+		if strings.HasSuffix(normalized, "/"+oldPath) {
+			return newPath, true
+		}
+	}
+	if mapped, ok := existingRepoFileMapping(normalized); ok {
+		return mapped, true
+	}
+	return "", false
+}
+
+func existingRepoFileMapping(normalized string) (string, bool) {
+	files := repositoryFiles()
+	if len(files) == 0 {
+		return "", false
+	}
+	parts := strings.Split(normalized, "/")
+	for i := 0; i < len(parts); i++ {
+		candidate := path.Clean(strings.Join(parts[i:], "/"))
+		if candidate == "." || candidate == "" {
+			continue
+		}
+		if _, ok := files[candidate]; ok {
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
+func repositoryFiles() map[string]struct{} {
+	repoFilesOnce.Do(func() {
+		repoFiles = make(map[string]struct{})
+		root := findRepoRoot()
+		if root == "" {
+			return
+		}
+		_ = filepath.WalkDir(root, func(fullPath string, d os.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+			name := d.Name()
+			if d.IsDir() {
+				if strings.HasPrefix(name, ".") && fullPath != root {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			rel, err := filepath.Rel(root, fullPath)
+			if err != nil {
+				return nil
+			}
+			repoFiles[path.Clean(filepath.ToSlash(rel))] = struct{}{}
+			return nil
+		})
+	})
+	return repoFiles
+}
+
+func findRepoRoot() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	for dir := wd; dir != "" && dir != filepath.Dir(dir); dir = filepath.Dir(dir) {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+	}
+	return ""
+}
+
+func normalizeToolFilePath(filePath string) string {
+	filePath = strings.TrimSpace(filePath)
+	if filePath == "" {
+		return ""
+	}
+	filePath = strings.ReplaceAll(filePath, "\\", "/")
+	filePath = strings.TrimRight(filePath, "/")
+	filePath = strings.TrimPrefix(filePath, "./")
+	filePath = strings.TrimPrefix(filePath, "/")
+	return path.Clean(filePath)
+}
+
+func replaceToolCallFilePath(input map[string]interface{}, mappedPath string) map[string]interface{} {
+	if input == nil {
+		return map[string]interface{}{"file_path": mappedPath}
+	}
+	replaced := make(map[string]interface{}, len(input))
+	for k, v := range input {
+		replaced[k] = v
+	}
+	if _, ok := replaced["file_path"]; ok {
+		replaced["file_path"] = mappedPath
+	}
+	if _, ok := replaced["path"]; ok {
+		replaced["path"] = mappedPath
+	}
+	if _, ok := replaced["file_path"]; !ok && replaced["path"] == nil {
+		replaced["file_path"] = mappedPath
+	}
+	return replaced
+}
+
+func fileDiscoveryInput(toolName, base string) map[string]interface{} {
+	switch toolName {
+	case "Glob":
+		return map[string]interface{}{"pattern": "**/" + base, "path": "."}
+	case "list_files":
+		return map[string]interface{}{"path": ".", "recursive": true}
+	default:
+		return map[string]interface{}{}
+	}
 }
 
 // totalOutputTokens estimates total output tokens from content blocks.
