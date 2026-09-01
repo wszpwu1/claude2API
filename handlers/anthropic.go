@@ -1037,28 +1037,37 @@ func rewriteInitialReadCalls(messages []models.AnthropicMessage, tools []models.
 	if len(calls) == 0 || hasAnyToolResults(messages) {
 		return calls
 	}
-	discoveryTool := fileDiscoveryToolName(tools)
-	if discoveryTool == "" {
-		return calls
-	}
 	out := make([]toolCall, len(calls))
 	copy(out, calls)
-	rewritten := 0
+	mapped := 0
+	discovered := 0
 	for i := range out {
 		if !isReadToolName(out[i].Name) {
 			continue
 		}
 		filePath := toolCallFilePath(out[i].Input)
+		if mappedPath, ok := legacyRepoPathMapping(filePath); ok {
+			out[i].Input = replaceToolCallFilePath(out[i].Input, mappedPath)
+			mapped++
+			continue
+		}
+		discoveryTool := fileDiscoveryToolName(tools)
+		if discoveryTool == "" {
+			continue
+		}
 		base := toolPathBase(filePath)
 		if base == "" {
 			continue
 		}
 		out[i].Name = discoveryTool
 		out[i].Input = fileDiscoveryInput(discoveryTool, base)
-		rewritten++
+		discovered++
 	}
-	if rewritten > 0 {
-		log.Printf("rewrote %d initial read tool call(s) into %s discovery call(s)", rewritten, discoveryTool)
+	if mapped > 0 {
+		log.Printf("remapped %d initial read tool call(s) from legacy claudeapi paths", mapped)
+	}
+	if discovered > 0 {
+		log.Printf("rewrote %d initial read tool call(s) into discovery call(s)", discovered)
 	}
 	return out
 }
@@ -1125,6 +1134,71 @@ func toolPathBase(filePath string) string {
 		return ""
 	}
 	return base
+}
+
+var legacyRepoPathAliases = map[string]string{
+	"claudeapi/cmd/server/main.go":          "main.go",
+	"claudeapi/internal/config/config.go":   "config/config.go",
+	"claudeapi/internal/proxy/claude.go":    "claude/client.go",
+	"claudeapi/internal/proxy/sse.go":       "utils/sse.go",
+	"claudeapi/internal/handlers/chat.go":   "handlers/chat.go",
+	"claudeapi/internal/handlers/models.go": "handlers/common.go",
+	"claudeapi/internal/middleware/auth.go": "middleware/auth.go",
+	"cmd/server/main.go":                    "main.go",
+	"internal/config/config.go":             "config/config.go",
+	"internal/proxy/claude.go":              "claude/client.go",
+	"internal/proxy/sse.go":                 "utils/sse.go",
+	"internal/handlers/chat.go":             "handlers/chat.go",
+	"internal/handlers/models.go":           "handlers/common.go",
+	"internal/middleware/auth.go":           "middleware/auth.go",
+}
+
+func legacyRepoPathMapping(filePath string) (string, bool) {
+	normalized := normalizeToolFilePath(filePath)
+	if normalized == "" {
+		return "", false
+	}
+	if mapped, ok := legacyRepoPathAliases[normalized]; ok {
+		return mapped, true
+	}
+	for oldPath, newPath := range legacyRepoPathAliases {
+		if strings.HasSuffix(normalized, "/"+oldPath) {
+			return newPath, true
+		}
+	}
+	return "", false
+}
+
+func normalizeToolFilePath(filePath string) string {
+	filePath = strings.TrimSpace(filePath)
+	if filePath == "" {
+		return ""
+	}
+	filePath = strings.ReplaceAll(filePath, "\\", "/")
+	filePath = strings.TrimRight(filePath, "/")
+	filePath = strings.TrimPrefix(filePath, "./")
+	filePath = strings.TrimPrefix(filePath, "/")
+	return path.Clean(filePath)
+}
+
+func replaceToolCallFilePath(input map[string]interface{}, mappedPath string) map[string]interface{} {
+	if input == nil {
+		return map[string]interface{}{"file_path": mappedPath}
+	}
+	replaced := make(map[string]interface{}, len(input))
+	for k, v := range input {
+		replaced[k] = v
+	}
+	if _, ok := replaced["file_path"]; ok {
+		replaced["file_path"] = mappedPath
+	}
+	if _, ok := replaced["path"]; ok {
+		replaced["path"] = mappedPath
+	}
+	if _, ok := replaced["file_path"]; !ok && replaced["path"] == nil {
+		replaced["file_path"] = mappedPath
+	}
+	return replaced
 }
 
 func fileDiscoveryInput(toolName, base string) map[string]interface{} {
