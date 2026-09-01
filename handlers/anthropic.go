@@ -1145,20 +1145,15 @@ var legacyRepoPathAliases = map[string]string{
 	"internal/handlers/models.go":           "handlers/common.go",
 }
 
-var legacyRepoPathPrefixes = []struct {
-	old string
-	new string
-}{
-	{old: "claudeapi/cmd/server/", new: ""},
-	{old: "cmd/server/", new: ""},
-	{old: "claudeapi/internal/config/", new: "config/"},
-	{old: "internal/config/", new: "config/"},
-	{old: "claudeapi/internal/proxy/", new: "claude/"},
-	{old: "internal/proxy/", new: "claude/"},
-	{old: "claudeapi/internal/handlers/", new: "handlers/"},
-	{old: "internal/handlers/", new: "handlers/"},
-	{old: "claudeapi/internal/middleware/", new: "middleware/"},
-	{old: "internal/middleware/", new: "middleware/"},
+var repoTopLevelDirs = map[string]struct{}{
+	"admin": {}, "claude": {}, "config": {}, "handlers": {}, "middleware": {},
+	"models": {}, "tlsclient": {}, "utils": {},
+}
+
+var repoTopLevelFiles = map[string]struct{}{
+	"api.md": {}, "api_en.md": {}, "docker-compose.yml": {}, "dockerfile": {},
+	"go.mod": {}, "go.sum": {}, "main.go": {}, "main.go.bak": {},
+	"readme.md": {}, "readme_en.md": {},
 }
 
 func legacyRepoPathMapping(filePath string) (string, bool) {
@@ -1174,29 +1169,26 @@ func legacyRepoPathMapping(filePath string) (string, bool) {
 			return newPath, true
 		}
 	}
-	for _, rule := range legacyRepoPathPrefixes {
-		if mapped, ok := applyLegacyPrefixRule(normalized, rule.old, rule.new); ok {
-			return mapped, true
-		}
+	if mapped, ok := repoRelativePathMapping(normalized); ok {
+		return mapped, true
 	}
 	return "", false
 }
 
-func applyLegacyPrefixRule(normalized, oldPrefix, newPrefix string) (string, bool) {
-	if strings.HasPrefix(normalized, oldPrefix) {
-		rest := strings.TrimPrefix(normalized, oldPrefix)
-		if rest == "" {
-			return "", false
+func repoRelativePathMapping(normalized string) (string, bool) {
+	parts := strings.Split(normalized, "/")
+	for i := 0; i < len(parts); i++ {
+		candidate := path.Clean(strings.Join(parts[i:], "/"))
+		if candidate == "." || candidate == "" {
+			continue
 		}
-		return path.Clean(newPrefix + rest), true
-	}
-	idx := strings.Index(normalized, "/"+oldPrefix)
-	if idx >= 0 {
-		rest := normalized[idx+len(oldPrefix)+1:]
-		if rest == "" {
-			return "", false
+		first, rest, hasSlash := strings.Cut(candidate, "/")
+		if _, ok := repoTopLevelDirs[first]; ok && hasSlash && rest != "" {
+			return candidate, true
 		}
-		return path.Clean(newPrefix + rest), true
+		if _, ok := repoTopLevelFiles[strings.ToLower(candidate)]; ok {
+			return candidate, true
+		}
 	}
 	return "", false
 }
