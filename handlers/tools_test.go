@@ -372,49 +372,49 @@ func TestResolveThinking(t *testing.T) {
 		{map[string]interface{}{"type": "enabled"}, "auto", 0},
 		{"invalid", "auto", 0},
 	}
-
-	func TestIsFileOperationTaskRequiresExplicitIntent(t *testing.T) {
-		fileToolMessages := []models.AnthropicMessage{
-			{
-				Role: "user",
-				Content: []interface{}{
-					map[string]interface{}{"type": "text", "text": "你好"},
-				},
-			},
-		}
-		if isFileOperationTask(fileToolMessages) {
-			t.Fatalf("greeting should not be treated as file task")
-		}
-
-		explicitEnglish := []models.AnthropicMessage{
-			{
-				Role: "user",
-				Content: []interface{}{
-					map[string]interface{}{"type": "text", "text": "please read file handlers/chat.go"},
-				},
-			},
-		}
-		if !isFileOperationTask(explicitEnglish) {
-			t.Fatalf("explicit file request should be treated as file task")
-		}
-
-		explicitChinese := []models.AnthropicMessage{
-			{
-				Role: "user",
-				Content: []interface{}{
-					map[string]interface{}{"type": "text", "text": "请帮我读取文件 config/config.go"},
-				},
-			},
-		}
-		if !isFileOperationTask(explicitChinese) {
-			t.Fatalf("explicit Chinese file request should be treated as file task")
-		}
-	}
 	for _, c := range cases {
 		mode, budget := resolveThinking(c.in)
 		if mode != c.wantMode || budget != c.wantBudget {
 			t.Fatalf("resolveThinking(%v) = (%q,%d), want (%q,%d)", c.in, mode, budget, c.wantMode, c.wantBudget)
 		}
+	}
+}
+
+func TestIsFileOperationTaskRequiresExplicitIntent(t *testing.T) {
+	fileToolMessages := []models.AnthropicMessage{
+		{
+			Role: "user",
+			Content: []interface{}{
+				map[string]interface{}{"type": "text", "text": "你好"},
+			},
+		},
+	}
+	if isFileOperationTask(fileToolMessages) {
+		t.Fatalf("greeting should not be treated as file task")
+	}
+
+	explicitEnglish := []models.AnthropicMessage{
+		{
+			Role: "user",
+			Content: []interface{}{
+				map[string]interface{}{"type": "text", "text": "please read file handlers/chat.go"},
+			},
+		},
+	}
+	if !isFileOperationTask(explicitEnglish) {
+		t.Fatalf("explicit file request should be treated as file task")
+	}
+
+	explicitChinese := []models.AnthropicMessage{
+		{
+			Role: "user",
+			Content: []interface{}{
+				map[string]interface{}{"type": "text", "text": "请帮我读取文件 config/config.go"},
+			},
+		},
+	}
+	if !isFileOperationTask(explicitChinese) {
+		t.Fatalf("explicit Chinese file request should be treated as file task")
 	}
 }
 
