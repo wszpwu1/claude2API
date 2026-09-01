@@ -754,12 +754,12 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 		thinkingMode, _ = resolveThinking(req.Thinking)
 	}
 
-	// Detect whether this is a file/code operation task so we can apply
-	// stricter tool-use discipline and prevent switch_mode escapes.
-	// When the tool set itself contains file-access tools (Glob/Read/Write/Edit/Bash/Grep),
-	// we always treat it as a file task regardless of message content — the presence
-	// of those tools is the strongest signal that file operations are expected.
-	fileTask := isFileOperationTask(req.Messages, req.ToolDefs)
+	// Detect whether this turn explicitly asks for file/code operations so we
+	// can apply stricter tool-use discipline and prevent switch_mode escapes.
+	// Clients like Roo Code always send a full tool list, even for plain chat.
+	// Treating tool availability alone as a file-task signal causes unnecessary
+	// retry rounds and multi-minute latency on simple greetings.
+	fileTask := isFileOperationTask(req.Messages)
 
 	prompt := buildToolPrompt(req.System, req.Messages, toolDefText)
 
@@ -903,25 +903,16 @@ var fileTaskWordRe = regexp.MustCompile(
 		`create\s+file|delete\s+file|move\s+file|rename\s+file|` +
 		`read\s+file|write\s+file|open\s+file|edit\s+file)\b`)
 
-// chineseFileTaskRe matches Chinese file/code operation phrases.
+// chineseFileTaskRe matches Chinese file operation phrases.
 var chineseFileTaskRe = regexp.MustCompile(
-	`(文件|代码|路径|搜索文件|查找文件|编辑文件|读取文件|写入文件|修改文件|目录|工程|项目|函数定义|类定义|创建文件|删除文件)`)
+	`(文件|路径|搜索文件|查找文件|编辑文件|读取文件|写入文件|修改文件|目录|创建文件|删除文件|重命名文件|移动文件)`)
 
-// isFileOperationTask reports whether the request involves file or code operations.
+// isFileOperationTask reports whether the latest user turn explicitly requests
+// file operations.
 //
-// Decision order:
-//  1. If the tool set contains any known file-access tool (Glob/Read/Write/Edit/Bash/Grep),
-//     return true immediately — the tool definitions are the authoritative signal.
-//  2. Otherwise fall back to keyword matching on the most recent user message so
-//     that pure-chat requests (no file tools) are not over-classified.
-func isFileOperationTask(messages []models.AnthropicMessage, tools []models.AnthropicTool) bool {
-	// Primary check: tool set contains a file-access tool.
-	for _, t := range tools {
-		if _, ok := fileToolNames[t.Name]; ok {
-			return true
-		}
-	}
-	// Fallback: keyword matching on the most recent user message.
+// Keyword matching on the most recent user message avoids over-classifying
+// pure chat turns as file tasks when the client always sends full tool defs.
+func isFileOperationTask(messages []models.AnthropicMessage) bool {
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role != "user" {
 			continue

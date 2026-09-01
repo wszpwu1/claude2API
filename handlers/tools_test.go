@@ -380,6 +380,44 @@ func TestResolveThinking(t *testing.T) {
 	}
 }
 
+func TestIsFileOperationTaskRequiresExplicitIntent(t *testing.T) {
+	fileToolMessages := []models.AnthropicMessage{
+		{
+			Role: "user",
+			Content: []interface{}{
+				map[string]interface{}{"type": "text", "text": "你好"},
+			},
+		},
+	}
+	if isFileOperationTask(fileToolMessages) {
+		t.Fatalf("greeting should not be treated as file task")
+	}
+
+	explicitEnglish := []models.AnthropicMessage{
+		{
+			Role: "user",
+			Content: []interface{}{
+				map[string]interface{}{"type": "text", "text": "please read file handlers/chat.go"},
+			},
+		},
+	}
+	if !isFileOperationTask(explicitEnglish) {
+		t.Fatalf("explicit file request should be treated as file task")
+	}
+
+	explicitChinese := []models.AnthropicMessage{
+		{
+			Role: "user",
+			Content: []interface{}{
+				map[string]interface{}{"type": "text", "text": "请帮我读取文件 config/config.go"},
+			},
+		},
+	}
+	if !isFileOperationTask(explicitChinese) {
+		t.Fatalf("explicit Chinese file request should be treated as file task")
+	}
+}
+
 func TestOpenAIToolsToAnthropic(t *testing.T) {
 	tools := []models.OpenAITool{{
 		Type: "function",
