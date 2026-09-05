@@ -789,7 +789,8 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 	}
 
 	text, calls := extractToolCalls(content)
-	calls = rewriteInitialReadCalls(req.Messages, req.ToolDefs, calls)
+	// 禁用工具调用重写 - 保持透明性
+	// calls = rewriteInitialReadCalls(req.Messages, req.ToolDefs, calls)
 	logToolCallRound("initial", text, calls)
 
 	// Guard 2: nudge retry.
@@ -806,7 +807,8 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 		if retryErr == nil && retryContent != "" {
 			totalInputRunes += len([]rune(retryPrompt)) + len([]rune(retryContent))
 			retryText, retryCalls := extractToolCalls(retryContent)
-			retryCalls = rewriteInitialReadCalls(req.Messages, req.ToolDefs, retryCalls)
+			// 禁用工具调用重写 - 保持透明性
+			// retryCalls = rewriteInitialReadCalls(req.Messages, req.ToolDefs, retryCalls)
 			logToolCallRound("nudge_retry", retryText, retryCalls)
 			if len(retryCalls) > 0 {
 				// Retry produced tool calls — discard earlier thinking/text.
@@ -833,7 +835,8 @@ func (h *Handler) runToolLoop(ctx context.Context, client *claude.Client, req mo
 		if warnErr == nil && warnContent != "" {
 			totalInputRunes += len([]rune(warningPrompt)) + len([]rune(warnContent))
 			warnText, warnCalls := extractToolCalls(warnContent)
-			warnCalls = rewriteInitialReadCalls(req.Messages, req.ToolDefs, warnCalls)
+			// 禁用工具调用重写 - 保持透明性
+			// warnCalls = rewriteInitialReadCalls(req.Messages, req.ToolDefs, warnCalls)
 			logToolCallRound("warning_retry", warnText, warnCalls)
 			if len(warnCalls) > 0 {
 				allBlocks = nil
