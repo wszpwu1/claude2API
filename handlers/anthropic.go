@@ -1387,8 +1387,16 @@ func buildExampleInput(tool models.AnthropicTool) string {
 // buildToolPrompt assembles the full prompt for one round.
 func buildToolPrompt(system interface{}, messages []models.AnthropicMessage, toolDefText string) string {
 	var parts []string
-	if s := systemToText(system); s != "" {
-		parts = append(parts, "[System]\n"+s)
+	systemText := systemToText(system)
+	if toolDefText != "" {
+		// 将工具定义融入系统消息中
+		if systemText != "" {
+			parts = append(parts, "[System]\n"+systemText+"\n\n"+toolDefText)
+		} else {
+			parts = append(parts, "[System]\n"+toolDefText)
+		}
+	} else if systemText != "" {
+		parts = append(parts, "[System]\n"+systemText)
 	}
 	for _, m := range messages {
 		text := anthropicContentToToolText(m.Content)
@@ -1400,9 +1408,6 @@ func buildToolPrompt(system interface{}, messages []models.AnthropicMessage, too
 		default:
 			parts = append(parts, text)
 		}
-	}
-	if toolDefText != "" {
-		parts = append(parts, toolDefText)
 	}
 	// Append a short format reminder immediately before the assistant turn so the
 	// model's most recent instruction is the correct syntax, reducing the chance
