@@ -1297,14 +1297,9 @@ func buildToolDefsPrompt(tools []models.AnthropicTool, toolChoice interface{}) s
 		return ""
 	}
 	var sb strings.Builder
-	sb.WriteString("# Available Tools\n\n")
-	sb.WriteString("The following tools are available for you to use. To call a tool, use this exact format:\n\n")
-	sb.WriteString("[TOOL_CALL]{\"name\":\"<tool_name>\",\"id\":\"<unique_id>\",\"input\":{...}}[/TOOL_CALL]\n\n")
-	sb.WriteString("Format requirements:\n")
-	sb.WriteString("- Each tool call must be on a single line with no extra whitespace\n")
-	sb.WriteString("- Use compact JSON (no line breaks inside the JSON object)\n")
-	sb.WriteString("- Each call needs a unique id like \"toolu_1\", \"toolu_2\", etc.\n")
-	sb.WriteString("- You can add explanation text before or after the tool call\n\n")
+	sb.WriteString("\n\nYou can call external functions when needed. To invoke a function, output it in this format:\n")
+	sb.WriteString("[TOOL_CALL]{\"name\":\"function_name\",\"id\":\"call_1\",\"input\":{\"param\":\"value\"}}[/TOOL_CALL]\n\n")
+	sb.WriteString("Available functions:\n")
 
 	// Inject tool_choice constraint so the model honours the caller's selection policy.
 	choiceType := ""
@@ -1315,21 +1310,20 @@ func buildToolDefsPrompt(tools []models.AnthropicTool, toolChoice interface{}) s
 	}
 	switch choiceType {
 	case "none":
-		sb.WriteString("Note: For this request, respond without using any tools.\n\n")
+		sb.WriteString("")
 	case "any":
-		sb.WriteString("Important: Please use at least one of the available tools for this request.\n\n")
+		sb.WriteString("Note: Please invoke at least one function for this request.\n")
 	case "tool":
 		if choiceName != "" {
-			sb.WriteString(fmt.Sprintf("Important: Please use the %q tool for this request.\n\n", choiceName))
+			sb.WriteString(fmt.Sprintf("Note: Please invoke the %q function.\n", choiceName))
 		} else {
-			sb.WriteString("Important: Please use one of the available tools for this request.\n\n")
+			sb.WriteString("Note: Please invoke one of the available functions.\n")
 		}
 	default:
-		// "auto" or unset: model decides.
-		sb.WriteString("Use these tools whenever they would be helpful.\n\n")
+		sb.WriteString("")
 	}
 
-	sb.WriteString("## Tool Definitions\n\n")
+	sb.WriteString("\n")
 	b, _ := json.MarshalIndent(tools, "", "  ")
 	sb.Write(b)
 	sb.WriteString("\n")
