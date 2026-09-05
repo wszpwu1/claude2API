@@ -1297,16 +1297,14 @@ func buildToolDefsPrompt(tools []models.AnthropicTool, toolChoice interface{}) s
 		return ""
 	}
 	var sb strings.Builder
-	sb.WriteString("[Tools]\n")
-	sb.WriteString("You have access to the following tools. When you need to use a tool, emit EXACTLY one block per call using this format:\n")
-	sb.WriteString("  [TOOL_CALL]{\"name\":\"<tool_name>\",\"id\":\"<unique_id>\",\"input\":{...}}[/TOOL_CALL]\n")
-	sb.WriteString("CRITICAL FORMAT RULES — failure to follow these will break the system:\n")
-	sb.WriteString("- Do NOT wrap the block in markdown code fences (no ```json ... ```).\n")
-	sb.WriteString("- Do NOT pretty-print or indent the JSON inside the block — keep it on ONE line.\n")
-	sb.WriteString("- Do NOT add any text between [TOOL_CALL] and the opening { or between } and [/TOOL_CALL].\n")
-	sb.WriteString("- 'id' must be unique per call, e.g. \"toolu_1\", \"toolu_2\".\n")
-	sb.WriteString("- 'input' must match the tool's input_schema exactly.\n")
-	sb.WriteString("- You may include explanatory text BEFORE or AFTER the block, but never inside it.\n")
+	sb.WriteString("# Available Tools\n\n")
+	sb.WriteString("The following tools are available for you to use. To call a tool, use this exact format:\n\n")
+	sb.WriteString("[TOOL_CALL]{\"name\":\"<tool_name>\",\"id\":\"<unique_id>\",\"input\":{...}}[/TOOL_CALL]\n\n")
+	sb.WriteString("Format requirements:\n")
+	sb.WriteString("- Each tool call must be on a single line with no extra whitespace\n")
+	sb.WriteString("- Use compact JSON (no line breaks inside the JSON object)\n")
+	sb.WriteString("- Each call needs a unique id like \"toolu_1\", \"toolu_2\", etc.\n")
+	sb.WriteString("- You can add explanation text before or after the tool call\n\n")
 
 	// Inject tool_choice constraint so the model honours the caller's selection policy.
 	choiceType := ""
@@ -1317,49 +1315,24 @@ func buildToolDefsPrompt(tools []models.AnthropicTool, toolChoice interface{}) s
 	}
 	switch choiceType {
 	case "none":
-		// Model must NOT call any tool — respond as plain text.
-		sb.WriteString("- IMPORTANT: Do NOT use any tool in this response. Respond using plain text only.\n")
+		sb.WriteString("Note: For this request, respond without using any tools.\n\n")
 	case "any":
-		// Model MUST call at least one tool.
-		sb.WriteString("- IMPORTANT: You MUST use at least one tool in your response. Do not reply with plain text only.\n")
+		sb.WriteString("Important: Please use at least one of the available tools for this request.\n\n")
 	case "tool":
-		// Model MUST call the specific named tool.
 		if choiceName != "" {
-			sb.WriteString(fmt.Sprintf("- IMPORTANT: You MUST use the tool named %q in your response. Do not call any other tool or reply with plain text only.\n", choiceName))
+			sb.WriteString(fmt.Sprintf("Important: Please use the %q tool for this request.\n\n", choiceName))
 		} else {
-			sb.WriteString("- IMPORTANT: You MUST use at least one tool in your response.\n")
+			sb.WriteString("Important: Please use one of the available tools for this request.\n\n")
 		}
 	default:
 		// "auto" or unset: model decides.
-		sb.WriteString("- If no tool is needed, just respond normally.\n")
+		sb.WriteString("Use these tools whenever they would be helpful.\n\n")
 	}
 
-	sb.WriteString("\nFILE ACCESS RULES — always follow these when using Read or Glob:\n")
-	sb.WriteString("- NEVER guess or invent a file path. If a path is uncertain, call Glob first.\n")
-	sb.WriteString("- If Read returns \"file not found\", call Glob with pattern=\"**/<filename>\" to locate the real path before retrying.\n")
-	sb.WriteString("- After Glob returns results, call Read with the exact path from those results.\n")
-	sb.WriteString("- Do NOT fabricate paths like \"/project/src/foo.go\" unless Glob confirmed them.\n")
-
-	// Few-shot examples using the first available real tool to ground the model on
-	// the expected syntax. This significantly reduces format errors in practice.
-	if len(tools) > 0 {
-		sb.WriteString("\nFEW-SHOT EXAMPLES — copy the format exactly (do not copy the values):\n")
-		sb.WriteString("Example 1 — single tool call:\n")
-		exampleInput := buildExampleInput(tools[0])
-		exID := "toolu_01"
-		sb.WriteString(fmt.Sprintf("  [TOOL_CALL]{\"name\":%q,\"id\":%q,\"input\":%s}[/TOOL_CALL]\n", tools[0].Name, exID, exampleInput))
-		if len(tools) > 1 {
-			sb.WriteString("Example 2 — two sequential calls (each on its own line):\n")
-			ex2Input := buildExampleInput(tools[1])
-			sb.WriteString(fmt.Sprintf("  [TOOL_CALL]{\"name\":%q,\"id\":\"toolu_01\",\"input\":%s}[/TOOL_CALL]\n", tools[0].Name, exampleInput))
-			sb.WriteString(fmt.Sprintf("  [TOOL_CALL]{\"name\":%q,\"id\":\"toolu_02\",\"input\":%s}[/TOOL_CALL]\n", tools[1].Name, ex2Input))
-		}
-	}
-
-	sb.WriteString("\nAvailable tools (JSON):\n")
+	sb.WriteString("## Tool Definitions\n\n")
 	b, _ := json.MarshalIndent(tools, "", "  ")
 	sb.Write(b)
-	sb.WriteString("\n[/Tools]")
+	sb.WriteString("\n")
 	return sb.String()
 }
 
