@@ -77,34 +77,17 @@ func (p *clientPool) acquire(sessionKey, cookie string, explicit bool, conversat
 	p.accountsMu.RLock()
 	hasConfiguredAccounts := len(p.accounts) > 0
 	p.accountsMu.RUnlock()
-	if !explicit && hasConfiguredAccounts {
+
+	// 强制使用账号池，忽略 explicit 参数
+	if hasConfiguredAccounts {
 		if conversationID != "" {
 			return p.acquireConfiguredConversation(conversationID)
 		}
 		return p.acquireConfigured()
 	}
-	if sessionKey == "" {
-		return nil, fmt.Errorf("missing account credentials")
-	}
 
-	id := credentialID(sessionKey, cookie)
-	if value, ok := p.clients.Load(id); ok {
-		return &clientLease{accountID: id, client: value.(*claude.Client), release: func() {}}, nil
-	}
-
-	// tls-client construction is relatively expensive. Serialize cache misses so
-	// concurrent first requests for the same credentials create exactly one client.
-	p.clientsMu.Lock()
-	defer p.clientsMu.Unlock()
-	if value, ok := p.clients.Load(id); ok {
-		return &clientLease{accountID: id, client: value.(*claude.Client), release: func() {}}, nil
-	}
-	client, err := claude.NewClient(p.baseURL, sessionKey, cookie)
-	if err != nil {
-		return nil, err
-	}
-	p.clients.Store(id, client)
-	return &clientLease{accountID: id, client: client, release: func() {}}, nil
+	// 如果没有配置账号池，返回错误
+	return nil, fmt.Errorf("no configured accounts available")
 }
 
 func (p *clientPool) acquireConfiguredConversation(conversationID string) (*clientLease, error) {
